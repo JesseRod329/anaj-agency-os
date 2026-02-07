@@ -12,14 +12,14 @@ Thanks for contributing.
 ## Development Setup
 
 ```bash
-open /Users/jesse/anaj1/anaj/anaj.xcodeproj
+open anaj.xcodeproj
 ```
 
 ## Build and Test
 
 ```bash
-xcodebuild -project /Users/jesse/anaj1/anaj/anaj.xcodeproj -scheme anaj -destination "platform=macOS" build
-xcodebuild test -project /Users/jesse/anaj1/anaj/anaj.xcodeproj -scheme anaj -destination "platform=macOS"
+xcodebuild -project anaj.xcodeproj -scheme anaj -destination "platform=macOS" build
+xcodebuild test -project anaj.xcodeproj -scheme anaj -destination "platform=macOS"
 ```
 
 ## Coding Standards
@@ -49,4 +49,3 @@ When filing issues, include:
 - Repro steps
 - Environment (`macOS`, Xcode version, simulator/device)
 - Logs/screenshots when relevant
-

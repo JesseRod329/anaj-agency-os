@@ -5,9 +5,27 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/JesseRod329/anaj-agency-os/ci.yml?label=CI)](https://github.com/JesseRod329/anaj-agency-os/actions)
 [![Issues](https://img.shields.io/github/issues/JesseRod329/anaj-agency-os)](https://github.com/JesseRod329/anaj-agency-os/issues)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./.github/CONTRIBUTING.md)
+
+> [!IMPORTANT]
+> ## ATTENTION: LOCAL-USE OPEN SOURCE PROGRAM
+> ANAJ is an open-source, local-first Agency OS intended for self-hosted/local workflows.
+> It includes integration surfaces for OpenClaw orchestration and external LLM providers (Ollama, OpenAI, Google Gemini).
+> Treat current integrations as production-capable for local use, with cloud-first hosted deployment patterns still evolving.
 
 ANAJ Agency OS is a SwiftUI + SwiftData workspace for agency operations: clients, projects, tasks, notes, prompt workflows, insights, invoicing, and ledger reporting.
+
+## What This Repo Is / Is Not
+
+**This repo is:**
+- A full local-first macOS/iOS agency operating system.
+- Open-source codebase with a built-in local API for OpenClaw and automation.
+- Multi-provider AI workspace (Ollama/OpenAI/Gemini) with Prompt Studio + Insights.
+
+**This repo is not:**
+- A hosted SaaS product with managed cloud infrastructure.
+- A one-click managed OpenClaw deployment.
+- A guarantee of cloud sync/collaboration behavior in every environment.
 
 ## Why ANAJ
 
@@ -138,7 +156,8 @@ anaj/
 ├── anaj.xcodeproj/        # Xcode project
 ├── anajTests/             # Unit tests
 ├── anajUITests/           # UI tests
-└── CLOUD_INSTRUCTIONS.md  # CloudKit setup notes
+├── .github/               # CI + community health files
+└── docs/                  # Supporting docs (CloudKit setup, support notes)
 ```
 
 ## Local Development
@@ -189,10 +208,11 @@ The API contract is evolving with the OpenClaw integration roadmap in this repos
 
 ## Open Source
 
-- [Contributing Guide](./CONTRIBUTING.md)
-- [Code of Conduct](./CODE_OF_CONDUCT.md)
-- [Security Policy](./SECURITY.md)
-- [Support](./SUPPORT.md)
+- [Contributing Guide](./.github/CONTRIBUTING.md)
+- [Code of Conduct](./.github/CODE_OF_CONDUCT.md)
+- [Security Policy](./.github/SECURITY.md)
+- [Support](./docs/support.md)
+- [CloudKit Setup Notes](./docs/cloudkit-setup.md)
 - [License](./LICENSE)
 
 ## Roadmap (High Level)

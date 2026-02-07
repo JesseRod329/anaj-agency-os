@@ -11,5 +11,4 @@
 
 ## Security
 
-For vulnerabilities, use the private process in `/Users/jesse/anaj1/anaj/SECURITY.md`.
-
+For vulnerabilities, use the private process in [Security Policy](../.github/SECURITY.md).
