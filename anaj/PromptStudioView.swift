@@ -14,6 +14,8 @@ struct PromptStudioView: View {
     @AppStorage("selectedAIProvider") private var selectedProvider = AIProvider.local
     @AppStorage("selectedLocalModel") private var selectedLocalModel = "llama3"
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
+    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18790/api"
+    @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
     
     @State private var selectedPrompt: Prompt?
     @State private var searchText = ""
@@ -27,6 +29,7 @@ struct PromptStudioView: View {
         case local = "Open Source"
         case openai = "OpenAI"
         case google = "Google"
+        case openclaw = "OpenClaw"
         var id: String { rawValue }
     }
     
@@ -58,9 +61,11 @@ struct PromptStudioView: View {
                         PromptStudioSettingsView(
                             openAIKey: $openAIKey,
                             googleAPIKey: $googleAPIKey,
+                            openClawAPIKey: $openClawAPIKey,
                             selectedProvider: $selectedProvider,
                             selectedLocalModel: $selectedLocalModel,
                             ollamaBaseURL: $ollamaBaseURL,
+                            openClawBaseURL: $openClawBaseURL,
                             availableLocalModels: $availableLocalModels,
                             isCheckingOllama: $isCheckingOllama,
                             fetchLocalModels: fetchLocalModels
@@ -131,6 +136,8 @@ struct PromptStudioView: View {
                         openAIKey: openAIKey,
                         googleKey: googleAPIKey,
                         ollamaBaseURL: ollamaBaseURL,
+                        openClawBaseURL: openClawBaseURL,
+                        openClawAPIKey: openClawAPIKey,
                         provider: selectedProvider,
                         localModel: selectedLocalModel
                     )
@@ -201,6 +208,8 @@ struct ChatInterface: View {
     let openAIKey: String
     let googleKey: String
     let ollamaBaseURL: String
+    let openClawBaseURL: String
+    let openClawAPIKey: String
     let provider: PromptStudioView.AIProvider
     let localModel: String
     
@@ -237,6 +246,24 @@ struct ChatInterface: View {
                     .textFieldStyle(.plain)
                     .foregroundStyle(.white)
                 
+                Text(provider.rawValue)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                    .foregroundStyle(.white.opacity(0.9))
+
+                if provider == .openclaw {
+                    Text("OpenClaw Route")
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.orange.opacity(0.2))
+                        .clipShape(Capsule())
+                        .foregroundStyle(.orange.opacity(0.95))
+                }
+
                 Spacer()
 
                 // Project Linker
@@ -610,6 +637,13 @@ struct ChatInterface: View {
                     response = try await OpenAI.chatCompletion(apiKey: openAIKey, messages: [ChatMessage(role: "user", content: summaryPrompt)], system: "You are a precise business analyst.")
                 } else if provider == .google {
                     response = try await GoogleAI.generateContent(apiKey: googleKey, prompt: summaryPrompt)
+                } else if provider == .openclaw {
+                    response = try await OpenClawProvider.generateContent(
+                        baseURL: openClawBaseURL,
+                        apiKey: openClawAPIKey,
+                        prompt: summaryPrompt,
+                        system: "You are a precise business analyst."
+                    )
                 }
                 
                 await MainActor.run {
@@ -759,6 +793,15 @@ struct ChatInterface: View {
                      await MainActor.run { assistantMsg.content = response }
                 } else if provider == .google {
                     let response = try await GoogleAI.generateContent(apiKey: googleKey, prompt: userMsgContent, images: images)
+                    await MainActor.run { assistantMsg.content = response }
+                } else if provider == .openclaw {
+                    let response = try await OpenClawProvider.chatCompletion(
+                        baseURL: openClawBaseURL,
+                        apiKey: openClawAPIKey,
+                        messages: history,
+                        system: systemCtx,
+                        prompt: userMsgContent
+                    )
                     await MainActor.run { assistantMsg.content = response }
                 }
                 
@@ -1391,12 +1434,86 @@ struct GoogleAI {
     }
 }
 
+struct OpenClawProvider {
+    private static func authorizedRequest(url: URL, apiKey: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
+    static func generateContent(baseURL: String, apiKey: String, prompt: String, system: String) async throws -> String {
+        guard let url = URL(string: "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/chat") else {
+            throw URLError(.badURL)
+        }
+
+        var request = authorizedRequest(url: url, apiKey: apiKey)
+        let body: [String: Any] = [
+            "prompt": prompt,
+            "system": system
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let err = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
+            throw NSError(domain: "OpenClaw", code: 0, userInfo: [NSLocalizedDescriptionKey: err])
+        }
+
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let content = json["content"] as? String { return content }
+            if let message = json["message"] as? String { return message }
+            if let response = json["response"] as? String { return response }
+        }
+
+        throw URLError(.cannotParseResponse)
+    }
+
+    static func chatCompletion(baseURL: String, apiKey: String, messages: [ChatMessage], system: String, prompt: String) async throws -> String {
+        guard let url = URL(string: "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/chat") else {
+            throw URLError(.badURL)
+        }
+
+        var request = authorizedRequest(url: url, apiKey: apiKey)
+        let history: [[String: String]] = messages
+            .filter { !$0.content.isEmpty }
+            .map { ["role": $0.role, "content": $0.content] }
+
+        let body: [String: Any] = [
+            "prompt": prompt,
+            "system": system,
+            "messages": history
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let err = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
+            throw NSError(domain: "OpenClaw", code: 0, userInfo: [NSLocalizedDescriptionKey: err])
+        }
+
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let content = json["content"] as? String { return content }
+            if let message = json["message"] as? String { return message }
+            if let response = json["response"] as? String { return response }
+            if let result = json["result"] as? [String: Any], let content = result["content"] as? String { return content }
+        }
+
+        throw URLError(.cannotParseResponse)
+    }
+}
+
 struct PromptStudioSettingsView: View {
     @Binding var openAIKey: String
     @Binding var googleAPIKey: String
+    @Binding var openClawAPIKey: String
     @Binding var selectedProvider: PromptStudioView.AIProvider
     @Binding var selectedLocalModel: String
     @Binding var ollamaBaseURL: String
+    @Binding var openClawBaseURL: String
     @Binding var availableLocalModels: [String]
     @Binding var isCheckingOllama: Bool
     var fetchLocalModels: () -> Void
@@ -1419,6 +1536,14 @@ struct PromptStudioSettingsView: View {
                 SecureInput(title: "OpenAI API Key", text: $openAIKey, color: .green)
             } else if selectedProvider == .google {
                 SecureInput(title: "Google API Key", text: $googleAPIKey, color: .blue)
+            } else if selectedProvider == .openclaw {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("OpenClaw Endpoint").font(.caption).foregroundStyle(.secondary)
+                    TextField("http://127.0.0.1:18790/api", text: $openClawBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    SecureInput(title: "OpenClaw API Key (Optional)", text: $openClawAPIKey, color: .orange)
+                }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Ollama Connection").font(.caption).foregroundStyle(.secondary)

@@ -130,6 +130,13 @@ ANAJ Agency OS is a SwiftUI + SwiftData workspace for agency operations: clients
   - `POST /api/notes`
   - `GET /api/ledger`
   - `POST /api/notify`
+  - `POST /api/openclaw/webhook`
+  - `POST /api/commands/execute`
+  - `GET /api/events/stream`
+  - `POST /api/memory/sync`
+  - `GET /api/memory/changes`
+  - `POST /api/agents/run`
+  - `GET /api/agents/runs/:id`
 - Optional API key auth via `ANAJ_API_KEY` environment variable.
 - Local task reminder scheduling via UserNotifications.
 - Calendar integration via EventKit (task + calendar event views).
@@ -212,12 +219,15 @@ The API contract is evolving with the OpenClaw integration roadmap in this repos
 - [Code of Conduct](./.github/CODE_OF_CONDUCT.md)
 - [Security Policy](./.github/SECURITY.md)
 - [Support](./docs/support.md)
+- [Docs Index](./docs/README.md)
 - [CloudKit Setup Notes](./docs/cloudkit-setup.md)
 - [License](./LICENSE)
 
 ## Roadmap (High Level)
 
 - Prompt Studio provider expansion (OpenClaw provider)
+- OpenClaw command execution and event stream wiring
+- Memory sync and agent-run observability
 - Notification bridge for external channels
 - Memory sync across AI + notes context
 - Agent-driven workflows for specialized tasks

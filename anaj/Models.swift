@@ -48,6 +48,8 @@ final class ChatInsight {
     var lastEditedAt: Date
     var sourceMessageIDs: [UUID]
     var providerLabel: String?
+    var externalRunID: String?
+    var externalEventID: String?
     
     @Relationship(inverse: \Prompt.insights) var prompt: Prompt?
     @Relationship(inverse: \Project.insights) var project: Project?
@@ -60,6 +62,8 @@ final class ChatInsight {
          isStarred: Bool = false,
          sourceMessageIDs: [UUID] = [],
          providerLabel: String? = nil,
+         externalRunID: String? = nil,
+         externalEventID: String? = nil,
          timestamp: Date = Date()) {
         self.id = id
         self.title = title
@@ -70,6 +74,8 @@ final class ChatInsight {
         self.lastEditedAt = timestamp
         self.sourceMessageIDs = sourceMessageIDs
         self.providerLabel = providerLabel
+        self.externalRunID = externalRunID
+        self.externalEventID = externalEventID
         self.timestamp = timestamp
     }
 }
@@ -162,6 +168,7 @@ final class Note {
     var extractedEntitiesJSON: String?
     var lastAnalyzedAt: Date?
     var linkedFromExtraction: Bool
+    var externalMemoryID: String?
     
     // QoL features
     var isArchived: Bool = false
@@ -178,9 +185,178 @@ final class Note {
         self.createdAt = createdAt
         self.lastModified = createdAt
         self.linkedFromExtraction = false
+        self.externalMemoryID = nil
         self.isArchived = false
         self.isPinned = false
         self.tags = []
+    }
+}
+
+// MARK: - OpenClaw Integration Models
+
+enum IntegrationDirection: String, Codable, CaseIterable {
+    case inbound
+    case outbound
+}
+
+enum IntegrationEventStatus: String, Codable, CaseIterable {
+    case received
+    case processed
+    case emitted
+    case failed
+}
+
+@Model
+final class IntegrationEvent {
+    @Attribute(.unique) var id: UUID
+    var eventType: String
+    var source: String
+    var direction: IntegrationDirection
+    var status: IntegrationEventStatus
+    var idempotencyKey: String?
+    var payloadJSON: String
+    var relatedRunID: String?
+    var createdAt: Date
+    var processedAt: Date?
+
+    init(
+        id: UUID = UUID(),
+        eventType: String,
+        source: String = "openclaw",
+        direction: IntegrationDirection,
+        status: IntegrationEventStatus = .received,
+        idempotencyKey: String? = nil,
+        payloadJSON: String = "{}",
+        relatedRunID: String? = nil,
+        createdAt: Date = Date(),
+        processedAt: Date? = nil
+    ) {
+        self.id = id
+        self.eventType = eventType
+        self.source = source
+        self.direction = direction
+        self.status = status
+        self.idempotencyKey = idempotencyKey
+        self.payloadJSON = payloadJSON
+        self.relatedRunID = relatedRunID
+        self.createdAt = createdAt
+        self.processedAt = processedAt
+    }
+}
+
+enum CommandExecutionStatus: String, Codable, CaseIterable {
+    case received
+    case running
+    case completed
+    case failed
+    case rolledBack
+}
+
+@Model
+final class CommandExecution {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var idempotencyKey: String
+    var command: String
+    var status: CommandExecutionStatus
+    var requestJSON: String
+    var responseJSON: String?
+    var errorMessage: String?
+    var rollbackReference: String?
+    var createdAt: Date
+    var completedAt: Date?
+
+    init(
+        id: UUID = UUID(),
+        idempotencyKey: String,
+        command: String,
+        status: CommandExecutionStatus = .received,
+        requestJSON: String = "{}",
+        responseJSON: String? = nil,
+        errorMessage: String? = nil,
+        rollbackReference: String? = nil,
+        createdAt: Date = Date(),
+        completedAt: Date? = nil
+    ) {
+        self.id = id
+        self.idempotencyKey = idempotencyKey
+        self.command = command
+        self.status = status
+        self.requestJSON = requestJSON
+        self.responseJSON = responseJSON
+        self.errorMessage = errorMessage
+        self.rollbackReference = rollbackReference
+        self.createdAt = createdAt
+        self.completedAt = completedAt
+    }
+}
+
+enum AgentRunStatus: String, Codable, CaseIterable {
+    case queued
+    case running
+    case completed
+    case failed
+    case deadLettered
+}
+
+@Model
+final class AgentRun {
+    @Attribute(.unique) var id: UUID
+    var name: String
+    var goal: String
+    var status: AgentRunStatus
+    var inputJSON: String?
+    var output: String?
+    var retryCount: Int
+    var lastError: String?
+    var deadLettered: Bool
+    var rollbackReference: String?
+    var idempotencyKey: String?
+    var startedAt: Date
+    var completedAt: Date?
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        goal: String,
+        status: AgentRunStatus = .queued,
+        inputJSON: String? = nil,
+        output: String? = nil,
+        retryCount: Int = 0,
+        lastError: String? = nil,
+        deadLettered: Bool = false,
+        rollbackReference: String? = nil,
+        idempotencyKey: String? = nil,
+        startedAt: Date = Date(),
+        completedAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.goal = goal
+        self.status = status
+        self.inputJSON = inputJSON
+        self.output = output
+        self.retryCount = retryCount
+        self.lastError = lastError
+        self.deadLettered = deadLettered
+        self.rollbackReference = rollbackReference
+        self.idempotencyKey = idempotencyKey
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+    }
+}
+
+@Model
+final class MemorySyncCursor {
+    @Attribute(.unique) var id: UUID
+    @Attribute(.unique) var source: String
+    var cursor: String
+    var updatedAt: Date
+
+    init(id: UUID = UUID(), source: String, cursor: String, updatedAt: Date = Date()) {
+        self.id = id
+        self.source = source
+        self.cursor = cursor
+        self.updatedAt = updatedAt
     }
 }
 
