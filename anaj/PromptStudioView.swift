@@ -2,6 +2,7 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import Combine
 
 struct PromptStudioView: View {
     @Environment(\.modelContext) private var modelContext
@@ -14,12 +15,14 @@ struct PromptStudioView: View {
     @AppStorage("selectedAIProvider") private var selectedProvider = AIProvider.local
     @AppStorage("selectedLocalModel") private var selectedLocalModel = "llama3"
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
-    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18790"
+    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18890"
     @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
+    @AppStorage("openClawStartupScriptPath") private var openClawStartupScriptPath = "/Users/jesse/anaj1/anaj/scripts/start-openclaw-bridge.sh"
     
     @State private var selectedPrompt: Prompt?
     @State private var searchText = ""
     @State private var showSettings = false
+    @StateObject private var openClawBridge = OpenClawBridgeService()
     
     // Shared State for Local Models (passed to settings)
     @State private var availableLocalModels: [String] = []
@@ -66,9 +69,11 @@ struct PromptStudioView: View {
                             selectedLocalModel: $selectedLocalModel,
                             ollamaBaseURL: $ollamaBaseURL,
                             openClawBaseURL: $openClawBaseURL,
+                            openClawStartupScriptPath: $openClawStartupScriptPath,
                             availableLocalModels: $availableLocalModels,
                             isCheckingOllama: $isCheckingOllama,
-                            fetchLocalModels: fetchLocalModels
+                            fetchLocalModels: fetchLocalModels,
+                            openClawBridge: openClawBridge
                         )
                     }
                 }
@@ -159,6 +164,16 @@ struct PromptStudioView: View {
         .onChange(of: selectedProvider) {
             if selectedProvider == .local {
                 fetchLocalModels()
+            } else if selectedProvider == .openclaw {
+                Task {
+                    await openClawBridge.refresh(baseURL: openClawBaseURL)
+                }
+            }
+        }
+        .onChange(of: showSettings) {
+            guard showSettings, selectedProvider == .openclaw else { return }
+            Task {
+                await openClawBridge.refresh(baseURL: openClawBaseURL)
             }
         }
     }
@@ -1482,7 +1497,12 @@ struct OpenClawProvider {
                     return json
                 }
 
-                let err = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
+                let raw = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
+                let err = await friendlyHTTPError(
+                    statusCode: http.statusCode,
+                    baseURL: baseURL,
+                    rawMessage: raw
+                )
                 let statusError = NSError(
                     domain: "OpenClaw",
                     code: http.statusCode,
@@ -1496,12 +1516,13 @@ struct OpenClawProvider {
                 }
                 throw statusError
             } catch {
-                lastError = error
+                let mapped = await mapTransportError(error, baseURL: baseURL)
+                lastError = mapped
                 let hasNext = index < urls.count - 1
                 if hasNext {
                     continue
                 }
-                throw error
+                throw mapped
             }
         }
 
@@ -1516,6 +1537,71 @@ struct OpenClawProvider {
             request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         return request
+    }
+
+    private static func mapTransportError(_ error: Error, baseURL: String) async -> Error {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .timedOut:
+                return NSError(
+                    domain: "OpenClaw",
+                    code: urlError.errorCode,
+                    userInfo: [NSLocalizedDescriptionKey: "Cannot reach OpenClaw at \(baseURL). Start the bridge with \"Connect OpenClaw\" and verify the endpoint."]
+                )
+            default:
+                break
+            }
+        }
+        return error
+    }
+
+    private static func friendlyHTTPError(statusCode: Int, baseURL: String, rawMessage: String) async -> String {
+        if statusCode == 404 {
+            if await isANAJLocalAPI(baseURL: baseURL) {
+                return "OpenClaw route not found at \(baseURL). This URL points to ANAJ local API on port 18790. Switch to http://127.0.0.1:18890 or use Connect OpenClaw."
+            }
+            return "OpenClaw /chat route not found at \(baseURL). Ensure the bridge backend is running on port 18890."
+        }
+
+        if statusCode == 502 {
+            return "OpenClaw bridge reached but upstream failed: \(rawMessage)"
+        }
+
+        if statusCode == 503 {
+            return "OpenClaw bridge is unavailable. Start backend and retry."
+        }
+
+        return rawMessage
+    }
+
+    private static func isANAJLocalAPI(baseURL: String) async -> Bool {
+        let normalized = baseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(normalized)/api/health") else { return false }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                return false
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return false
+            }
+            let service = (json["service"] as? String)?.lowercased()
+            if service == "anaj-api" {
+                return true
+            }
+            let status = (json["status"] as? String)?.lowercased()
+            let port = json["port"] as? Int
+            return status == "ok" && port == 18790
+        } catch {
+            return false
+        }
     }
 
     static func generateContent(baseURL: String, apiKey: String, prompt: String, system: String) async throws -> String {
@@ -1552,6 +1638,272 @@ struct OpenClawProvider {
     }
 }
 
+@MainActor
+final class OpenClawBridgeService: ObservableObject {
+    enum ConnectionState: Equatable {
+        case disconnected
+        case starting
+        case connected
+        case failed
+    }
+
+    @Published var state: ConnectionState = .disconnected
+    @Published var details: String = "Bridge is not connected."
+    @Published var showsLegacyPortFix = false
+
+    private var process: Process?
+    private var logBuffer = ""
+
+    func refresh(baseURL: String) async {
+        let normalized = normalize(baseURL: baseURL)
+        guard !normalized.isEmpty else {
+            state = .disconnected
+            details = "Set an OpenClaw endpoint first."
+            showsLegacyPortFix = false
+            return
+        }
+
+        if await isReady(baseURL: normalized) {
+            state = .connected
+            details = "OpenClaw bridge is reachable."
+            showsLegacyPortFix = false
+            return
+        }
+
+        state = .disconnected
+        details = "OpenClaw bridge is not reachable."
+        showsLegacyPortFix = await detectLegacyPortConflict(baseURL: normalized)
+    }
+
+    func connect(baseURL: String, startupScriptPath: String) async {
+        let normalized = normalize(baseURL: baseURL)
+        guard !normalized.isEmpty else {
+            state = .failed
+            details = "OpenClaw endpoint is empty."
+            return
+        }
+
+        state = .starting
+        details = "Starting backend..."
+        showsLegacyPortFix = false
+
+        if await isReady(baseURL: normalized) {
+            state = .connected
+            details = "OpenClaw bridge is already running."
+            return
+        }
+
+        let scriptURL = URL(fileURLWithPath: startupScriptPath)
+        guard FileManager.default.fileExists(atPath: scriptURL.path) else {
+            state = .failed
+            details = "Startup script not found at \(startupScriptPath)"
+            return
+        }
+
+        do {
+            try launchBridge(scriptPath: scriptURL.path)
+        } catch {
+            state = .failed
+            details = "Failed to start backend: \(error.localizedDescription)"
+            return
+        }
+
+        let ready = await waitUntilReady(baseURL: normalized, timeoutSeconds: 15)
+        if ready {
+            state = .connected
+            details = "Connected to OpenClaw bridge at \(normalized)."
+            showsLegacyPortFix = false
+            return
+        }
+
+        state = .failed
+        let logTail = trimmedLogTail(limit: 420)
+        if logTail.isEmpty {
+            details = "Backend did not become ready in time."
+        } else {
+            details = "Backend did not become ready in time.\n\(logTail)"
+        }
+        showsLegacyPortFix = await detectLegacyPortConflict(baseURL: normalized)
+    }
+
+    private func launchBridge(scriptPath: String) throws {
+        if let process, process.isRunning {
+            return
+        }
+
+        logBuffer = ""
+        let next = Process()
+        next.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        next.arguments = [scriptPath]
+
+        var env = ProcessInfo.processInfo.environment
+        env["OPENCLAW_BRIDGE_PORT"] = "18890"
+        next.environment = env
+
+        let pipe = Pipe()
+        next.standardOutput = pipe
+        next.standardError = pipe
+
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            let text = String(data: data, encoding: .utf8) ?? ""
+            Task { @MainActor in
+                self?.appendLog(text)
+            }
+        }
+
+        try next.run()
+        process = next
+    }
+
+    private func appendLog(_ text: String) {
+        logBuffer += text
+        if logBuffer.count > 6000 {
+            logBuffer = String(logBuffer.suffix(6000))
+        }
+    }
+
+    private func trimmedLogTail(limit: Int) -> String {
+        String(logBuffer.suffix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func waitUntilReady(baseURL: String, timeoutSeconds: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if await isReady(baseURL: baseURL) {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return false
+    }
+
+    private func isReady(baseURL: String) async -> Bool {
+        guard await healthCheck(baseURL: baseURL) else { return false }
+        return await chatRouteExists(baseURL: baseURL)
+    }
+
+    private func healthCheck(baseURL: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/api/health") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return (200...299).contains(http.statusCode)
+        } catch {
+            return false
+        }
+    }
+
+    private func chatRouteExists(baseURL: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/chat") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 2
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            if http.statusCode == 404 { return false }
+            if http.statusCode == 405 { return false }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func detectLegacyPortConflict(baseURL: String) async -> Bool {
+        let lowered = baseURL.lowercased()
+        guard lowered.contains("127.0.0.1:18790") || lowered.contains("localhost:18790") else {
+            return false
+        }
+
+        guard await isANAJLocalAPI(baseURL: baseURL) else { return false }
+        guard let chatURL = URL(string: "\(baseURL)/chat") else { return false }
+
+        var request = URLRequest(url: chatURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 2
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return http.statusCode == 404
+        } catch {
+            return false
+        }
+    }
+
+    private func isANAJLocalAPI(baseURL: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/api/health") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                return false
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return false
+            }
+            let service = (json["service"] as? String)?.lowercased()
+            if service == "anaj-api" {
+                return true
+            }
+            let status = (json["status"] as? String)?.lowercased()
+            let port = json["port"] as? Int
+            return status == "ok" && port == 18790
+        } catch {
+            return false
+        }
+    }
+
+    private func normalize(baseURL: String) -> String {
+        baseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+}
+
+private extension OpenClawBridgeService.ConnectionState {
+    var label: String {
+        switch self {
+        case .disconnected: return "Disconnected"
+        case .starting: return "Starting..."
+        case .connected: return "Connected"
+        case .failed: return "Failed"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .disconnected: return "bolt.slash.fill"
+        case .starting: return "hourglass"
+        case .connected: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .disconnected: return .secondary
+        case .starting: return .orange
+        case .connected: return .green
+        case .failed: return .red
+        }
+    }
+}
+
 struct PromptStudioSettingsView: View {
     @Binding var openAIKey: String
     @Binding var googleAPIKey: String
@@ -1560,9 +1912,11 @@ struct PromptStudioSettingsView: View {
     @Binding var selectedLocalModel: String
     @Binding var ollamaBaseURL: String
     @Binding var openClawBaseURL: String
+    @Binding var openClawStartupScriptPath: String
     @Binding var availableLocalModels: [String]
     @Binding var isCheckingOllama: Bool
     var fetchLocalModels: () -> Void
+    @ObservedObject var openClawBridge: OpenClawBridgeService
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -1583,12 +1937,75 @@ struct PromptStudioSettingsView: View {
             } else if selectedProvider == .google {
                 SecureInput(title: "Google API Key", text: $googleAPIKey, color: .blue)
             } else if selectedProvider == .openclaw {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text("OpenClaw Endpoint").font(.caption).foregroundStyle(.secondary)
-                    TextField("http://127.0.0.1:18790", text: $openClawBaseURL)
+                    TextField("http://127.0.0.1:18890", text: $openClawBaseURL)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
+
+                    Text("Startup Script").font(.caption).foregroundStyle(.secondary)
+                    TextField("/Users/jesse/anaj1/anaj/scripts/start-openclaw-bridge.sh", text: $openClawStartupScriptPath)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption2)
+
                     SecureInput(title: "OpenClaw API Key (Optional)", text: $openClawAPIKey, color: .orange)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            Task {
+                                await openClawBridge.connect(
+                                    baseURL: openClawBaseURL,
+                                    startupScriptPath: openClawStartupScriptPath
+                                )
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if openClawBridge.state == .starting {
+                                    ProgressView().controlSize(.small)
+                                    Text("Starting...")
+                                } else {
+                                    Image(systemName: "power.circle.fill")
+                                    Text("Connect OpenClaw")
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(openClawBridge.state == .starting)
+
+                        Button("Recheck") {
+                            Task {
+                                await openClawBridge.refresh(baseURL: openClawBaseURL)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(openClawBridge.state == .starting)
+                    }
+
+                    Label(openClawBridge.state.label, systemImage: openClawBridge.state.iconName)
+                        .font(.caption)
+                        .foregroundStyle(openClawBridge.state.tint)
+
+                    if !openClawBridge.details.isEmpty {
+                        Text(openClawBridge.details)
+                            .font(.caption2)
+                            .foregroundStyle(openClawBridge.state == .failed ? .red : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if openClawBridge.showsLegacyPortFix {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("This URL points to ANAJ API on port 18790. Switch OpenClaw endpoint to 18890.")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Button("Switch to http://127.0.0.1:18890") {
+                                openClawBaseURL = "http://127.0.0.1:18890"
+                                Task {
+                                    await openClawBridge.refresh(baseURL: openClawBaseURL)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1615,6 +2032,16 @@ struct PromptStudioSettingsView: View {
         }
         .padding(20)
         .frame(width: 300)
+        .task(id: selectedProvider) {
+            guard selectedProvider == .openclaw else { return }
+            await openClawBridge.refresh(baseURL: openClawBaseURL)
+        }
+        .onChange(of: openClawBaseURL) {
+            guard selectedProvider == .openclaw else { return }
+            Task {
+                await openClawBridge.refresh(baseURL: openClawBaseURL)
+            }
+        }
     }
 }
 

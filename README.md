@@ -213,6 +213,24 @@ The app starts a local API server when ANAJ launches:
 
 The API contract is evolving with the OpenClaw integration roadmap in this repository.
 
+## OpenClaw Quick Connect
+
+Prompt Studio now includes a **Connect OpenClaw** button that can start the OpenClaw bridge backend automatically and show startup/loading state.
+
+- Port map:
+  - ANAJ local API: `http://127.0.0.1:18790`
+  - OpenClaw bridge: `http://127.0.0.1:18890`
+- Default OpenClaw endpoint in settings: `http://127.0.0.1:18890`
+- Startup script used by the button:
+  - `/Users/jesse/anaj1/anaj/scripts/start-openclaw-bridge.sh`
+
+Manual fallback:
+
+```bash
+cd /Users/jesse/anaj1/anaj
+./scripts/start-openclaw-bridge.sh
+```
+
 ## Open Source
 
 - [Contributing Guide](./.github/CONTRIBUTING.md)

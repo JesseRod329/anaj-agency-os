@@ -89,7 +89,7 @@ struct SettingsView: View {
     @AppStorage("openAIKey") private var openAIKey = ""
     @AppStorage("googleAPIKey") private var googleAPIKey = ""
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
-    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18790"
+    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18890"
     @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
     @AppStorage("selectedAIProvider") private var selectedProvider = PromptStudioView.AIProvider.local
     
@@ -380,7 +380,7 @@ struct SettingsView: View {
             SettingsCard(title: "OpenClaw") {
                 VStack(alignment: .leading, spacing: 15) {
                     SettingsInput(label: "OpenClaw Base URL", text: $openClawBaseURL, icon: "link")
-                    Text("Default: http://127.0.0.1:18790")
+                    Text("Default: http://127.0.0.1:18890")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.4))
                     SecureSettingsInput(label: "OpenClaw API Key", text: $openClawAPIKey, icon: "key.fill")
