@@ -19,11 +19,109 @@ ANAJ Agency OS is a SwiftUI + SwiftData workspace for agency operations: clients
 
 ## Core Features
 
-- **Operations:** clients, projects, tasks, deadlines, team assignment
-- **Knowledge:** notes, extraction, tagging, decisions, chat insights
-- **Finance:** project financials, invoices, profitability ledger
-- **AI Workflow:** Prompt Studio with provider selection and context injection
-- **Automation Surface:** localhost API for OpenClaw and external tooling
+### AI + Prompt Studio
+
+- Multi-provider AI chat with runtime switching:
+  - `Open Source` (Ollama local models)
+  - `OpenAI` (`gpt-4o`)
+  - `Google` (Gemini)
+- Local model discovery via Ollama `/tags` and configurable Ollama base URL.
+- Streaming chat for local models (token-by-token UI updates).
+- Attachment-aware prompting:
+  - PDF/text/source file ingestion
+  - Image attachment support (base64 payloads for multimodal prompts)
+- Built-in system prompt editor + reusable persona presets (SwiftUI Expert, UX Designer, Tech Lead, Copywriter, Data Analyst, Troubleshooter).
+- Optional project-context injection into prompts (active tasks, project/client status).
+- AI summary generation from full chat history and one-click save as structured insight.
+- Manual insight capture directly from any chat message.
+- Rich message rendering with markdown/code block parsing and copy/save controls.
+
+### Ollama + Note Intelligence
+
+- Hybrid note extraction pipeline:
+  - Apple NaturalLanguage + `NSDataDetector` for fast local entity extraction
+  - Ollama fallback pass for task/decision extraction
+- Extracted entity suggestions for:
+  - People/client mentions
+  - Project associations
+  - Tasks
+  - Decisions
+  - Deadlines
+  - Budget/cost values
+- Accept/dismiss workflow for extracted entities with direct object creation in ANAJ.
+
+### Insights System
+
+- Dedicated Insights workspace with 3-panel workflow:
+  - Intelligence index
+  - Searchable insight feed
+  - Inspector detail panel
+- Insight filtering by:
+  - Starred
+  - Project
+  - Insight type
+- Insight metadata tracking:
+  - Source (`AI summary`, `manual selection`, etc.)
+  - Linked project/prompt
+  - Provider label
+  - Source message references
+
+### Agency Operations
+
+- Agency-native data model:
+  - Clients
+  - Projects
+  - Tasks
+  - Notes
+  - Decisions
+  - Tags
+  - Activities
+- Inbox/project task workflows with priority, estimates, actuals, due dates, and status.
+- Archive and restore flows for records.
+- Activity Feed timeline with filters + search.
+- Global Search (`Cmd+K`) across projects/clients/notes/tasks/decisions.
+- Command menu for fast lookup/jump actions.
+- Menu bar quick-add widget for task/note/project capture.
+- Rich text editing support for notes/content.
+
+### Finance + Delivery
+
+- Agency ledger with profitability and invoice tabs.
+- Profitability analytics:
+  - Revenue
+  - Net profit
+  - Margin
+  - Per-project cost/profit visualization
+- Invoice workflows:
+  - Status handling (`draft`, `sent`, `paid`, `overdue`, etc.)
+  - Outstanding vs paid tracking
+  - Invoice list + summary cards
+- Project-level financial modeling (internal rate, hours, costs, budget).
+
+### Integrations + Automation Surface
+
+- Built-in localhost API server for external orchestration (OpenClaw-ready):
+  - `GET /api/health`
+  - `GET /api/clients`
+  - `POST /api/clients`
+  - `GET /api/projects`
+  - `POST /api/projects`
+  - `GET /api/tasks`
+  - `POST /api/tasks`
+  - `PATCH /api/tasks/:id`
+  - `POST /api/notes`
+  - `GET /api/ledger`
+  - `POST /api/notify`
+- Optional API key auth via `ANAJ_API_KEY` environment variable.
+- Local task reminder scheduling via UserNotifications.
+- Calendar integration via EventKit (task + calendar event views).
+
+### Data, Reliability, and Platform
+
+- SwiftData-backed relational schema with strong model links across agency entities.
+- JSON backup/export manager (auto-cleanup + backup history retention).
+- Cross-platform target structure (`macOS` + `iOS` views).
+- CloudKit scaffolding + capability guards for cloud-enabled deployments.
 
 ## Tech Stack
 
@@ -68,16 +166,24 @@ xcodebuild -project anaj.xcodeproj -scheme anaj -destination "platform=macOS" bu
 xcodebuild test -project anaj.xcodeproj -scheme anaj -destination "platform=macOS"
 ```
 
-## Local API (Phase 1)
+## Local API
 
 The app starts a local API server when ANAJ launches:
 
 - Base URL: `http://127.0.0.1:18790`
 - Health: `GET /api/health`
-- Tasks:
+- Endpoints:
+  - `GET /api/health`
+  - `GET /api/clients`
+  - `POST /api/clients`
+  - `GET /api/projects`
+  - `POST /api/projects`
   - `GET /api/tasks`
   - `POST /api/tasks`
   - `PATCH /api/tasks/:id`
+  - `POST /api/notes`
+  - `GET /api/ledger`
+  - `POST /api/notify`
 
 The API contract is evolving with the OpenClaw integration roadmap in this repository.
 
