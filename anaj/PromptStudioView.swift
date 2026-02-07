@@ -14,7 +14,7 @@ struct PromptStudioView: View {
     @AppStorage("selectedAIProvider") private var selectedProvider = AIProvider.local
     @AppStorage("selectedLocalModel") private var selectedLocalModel = "llama3"
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
-    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18790/api"
+    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18790"
     @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
     
     @State private var selectedPrompt: Prompt?
@@ -1435,6 +1435,79 @@ struct GoogleAI {
 }
 
 struct OpenClawProvider {
+    private static func chatURLCandidates(baseURL: String) -> [URL] {
+        let trimmed = baseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        guard !trimmed.isEmpty else { return [] }
+
+        var candidates: [String] = ["\(trimmed)/chat"]
+        if trimmed.lowercased().hasSuffix("/api") {
+            let root = String(trimmed.dropLast(4)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if !root.isEmpty {
+                candidates.append("\(root)/chat")
+            }
+        }
+
+        var seen = Set<String>()
+        return candidates.compactMap { value in
+            let key = value.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            return URL(string: value)
+        }
+    }
+
+    private static func postChat(baseURL: String, apiKey: String, body: [String: Any]) async throws -> [String: Any] {
+        let urls = chatURLCandidates(baseURL: baseURL)
+        guard !urls.isEmpty else { throw URLError(.badURL) }
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        var lastError: Error = URLError(.badServerResponse)
+
+        for (index, url) in urls.enumerated() {
+            do {
+                var request = authorizedRequest(url: url, apiKey: apiKey)
+                request.httpBody = bodyData
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+
+                if (200...299).contains(http.statusCode) {
+                    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        throw URLError(.cannotParseResponse)
+                    }
+                    return json
+                }
+
+                let err = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
+                let statusError = NSError(
+                    domain: "OpenClaw",
+                    code: http.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: err]
+                )
+                lastError = statusError
+
+                let hasNext = index < urls.count - 1
+                if http.statusCode == 404 && hasNext {
+                    continue
+                }
+                throw statusError
+            } catch {
+                lastError = error
+                let hasNext = index < urls.count - 1
+                if hasNext {
+                    continue
+                }
+                throw error
+            }
+        }
+
+        throw lastError
+    }
+
     private static func authorizedRequest(url: URL, apiKey: String) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1446,38 +1519,20 @@ struct OpenClawProvider {
     }
 
     static func generateContent(baseURL: String, apiKey: String, prompt: String, system: String) async throws -> String {
-        guard let url = URL(string: "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/chat") else {
-            throw URLError(.badURL)
-        }
-
-        var request = authorizedRequest(url: url, apiKey: apiKey)
         let body: [String: Any] = [
             "prompt": prompt,
             "system": system
         ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let err = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
-            throw NSError(domain: "OpenClaw", code: 0, userInfo: [NSLocalizedDescriptionKey: err])
-        }
-
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let content = json["content"] as? String { return content }
-            if let message = json["message"] as? String { return message }
-            if let response = json["response"] as? String { return response }
-        }
+        let json = try await postChat(baseURL: baseURL, apiKey: apiKey, body: body)
+        if let content = json["content"] as? String { return content }
+        if let message = json["message"] as? String { return message }
+        if let response = json["response"] as? String { return response }
 
         throw URLError(.cannotParseResponse)
     }
 
     static func chatCompletion(baseURL: String, apiKey: String, messages: [ChatMessage], system: String, prompt: String) async throws -> String {
-        guard let url = URL(string: "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/chat") else {
-            throw URLError(.badURL)
-        }
-
-        var request = authorizedRequest(url: url, apiKey: apiKey)
         let history: [[String: String]] = messages
             .filter { !$0.content.isEmpty }
             .map { ["role": $0.role, "content": $0.content] }
@@ -1487,20 +1542,11 @@ struct OpenClawProvider {
             "system": system,
             "messages": history
         ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let err = String(data: data, encoding: .utf8) ?? "OpenClaw request failed"
-            throw NSError(domain: "OpenClaw", code: 0, userInfo: [NSLocalizedDescriptionKey: err])
-        }
-
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let content = json["content"] as? String { return content }
-            if let message = json["message"] as? String { return message }
-            if let response = json["response"] as? String { return response }
-            if let result = json["result"] as? [String: Any], let content = result["content"] as? String { return content }
-        }
+        let json = try await postChat(baseURL: baseURL, apiKey: apiKey, body: body)
+        if let content = json["content"] as? String { return content }
+        if let message = json["message"] as? String { return message }
+        if let response = json["response"] as? String { return response }
+        if let result = json["result"] as? [String: Any], let content = result["content"] as? String { return content }
 
         throw URLError(.cannotParseResponse)
     }
@@ -1539,7 +1585,7 @@ struct PromptStudioSettingsView: View {
             } else if selectedProvider == .openclaw {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("OpenClaw Endpoint").font(.caption).foregroundStyle(.secondary)
-                    TextField("http://127.0.0.1:18790/api", text: $openClawBaseURL)
+                    TextField("http://127.0.0.1:18790", text: $openClawBaseURL)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                     SecureInput(title: "OpenClaw API Key (Optional)", text: $openClawAPIKey, color: .orange)
