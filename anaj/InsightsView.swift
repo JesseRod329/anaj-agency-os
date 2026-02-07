@@ -504,6 +504,14 @@ struct InsightInspector: View {
                         if let provider = insight.providerLabel {
                             ProvenanceRow(label: "AI Source", value: "\(provider) [Unverified]")
                         }
+
+                        if let runID = insight.externalRunID {
+                            ProvenanceRow(label: "Agent Run", value: runID)
+                        }
+
+                        if let eventID = insight.externalEventID {
+                            ProvenanceRow(label: "Integration Event", value: eventID)
+                        }
                         
                         ProvenanceRow(label: "Created", value: insight.timestamp.formatted())
                         ProvenanceRow(label: "Last Edited", value: insight.lastEditedAt.formatted())

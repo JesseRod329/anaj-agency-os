@@ -99,7 +99,11 @@ struct anajApp: App {
             ChatInsight.self,
             Invoice.self,
             InvoiceItem.self,
-            Tag.self
+            Tag.self,
+            IntegrationEvent.self,
+            CommandExecution.self,
+            AgentRun.self,
+            MemorySyncCursor.self
         ])
         
         // Use lightweight migration to PRESERVE DATA on schema changes

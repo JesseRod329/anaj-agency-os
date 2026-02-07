@@ -89,6 +89,8 @@ struct SettingsView: View {
     @AppStorage("openAIKey") private var openAIKey = ""
     @AppStorage("googleAPIKey") private var googleAPIKey = ""
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
+    @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18790/api"
+    @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
     @AppStorage("selectedAIProvider") private var selectedProvider = PromptStudioView.AIProvider.local
     
     @State private var selectedTab: SettingsTab = .general
@@ -352,12 +354,33 @@ struct SettingsView: View {
     
     var integrationsSettings: some View {
         VStack(spacing: 25) {
+            SettingsCard(title: "AI Provider") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Default Provider")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                    Picker("", selection: $selectedProvider) {
+                        ForEach(PromptStudioView.AIProvider.allCases) { provider in
+                            Text(provider.rawValue).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
             SettingsCard(title: "Local Intelligence (Ollama)") {
                 VStack(alignment: .leading, spacing: 15) {
                     SettingsInput(label: "Ollama Base URL", text: $ollamaBaseURL, icon: "network")
                     Text("Default: http://localhost:11434/api")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.4))
+                }
+            }
+
+            SettingsCard(title: "OpenClaw") {
+                VStack(alignment: .leading, spacing: 15) {
+                    SettingsInput(label: "OpenClaw Base URL", text: $openClawBaseURL, icon: "link")
+                    SecureSettingsInput(label: "OpenClaw API Key", text: $openClawAPIKey, icon: "key.fill")
                 }
             }
             
