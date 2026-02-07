@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: Build
+        run: xcodebuild -project anaj.xcodeproj -scheme anaj -destination "platform=macOS" build
+
+      - name: Test
+        run: xcodebuild test -project anaj.xcodeproj -scheme anaj -destination "platform=macOS"
