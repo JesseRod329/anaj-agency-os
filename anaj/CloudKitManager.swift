@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import CloudKit
 
 @Observable
 class CloudKitManager {
@@ -13,52 +12,13 @@ class CloudKitManager {
     }
 
     init() {
-        // Ensure init does absolutely nothing related to CloudKit
+        // Keep init side-effect free so SettingsView cannot crash on launch.
     }
 
     func checkAccountStatus() {
-        // Disable CloudKit on iOS Simulator - it crashes without entitlements
-        #if targetEnvironment(simulator) && os(iOS)
         self.accountStatus = .unavailable
-        self.error = "CloudKit not available in iOS Simulator"
-        return
-        #endif
-
-        // Keep CloudKit disabled until iCloud entitlements/profile are stable.
-        self.accountStatus = .noAccount
-        self.error = "CloudKit is currently disabled for local builds."
-    }
-
-    private func fetchUserIdentity() {
-        #if !DEBUG
-        Task {
-            do {
-                let container = CKContainer.default()
-                let userId = try await container.userRecordID()
-                let info: CKUserIdentity = try await withCheckedThrowingContinuation { continuation in
-                    container.discoverUserIdentity(withUserRecordID: userId) { identity, error in
-                        if let error = error {
-                            continuation.resume(throwing: error)
-                        } else if let identity = identity {
-                            continuation.resume(returning: identity)
-                        } else {
-                            continuation.resume(throwing: CKError(.unknownItem))
-                        }
-                    }
-                }
-                
-                await MainActor.run {
-                    if let components = info.nameComponents {
-                        self.userName = PersonNameComponentsFormatter().string(from: components)
-                    } else {
-                        self.userName = "iCloud User"
-                    }
-                }
-            } catch {
-                print("Failed to fetch user identity: \(error.localizedDescription)")
-            }
-        }
-        #endif
+        self.userName = "Local Workspace"
+        self.error = "Cloud sync is disabled in this build."
     }
     
     var statusText: String {
