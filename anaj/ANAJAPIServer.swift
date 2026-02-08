@@ -205,6 +205,70 @@ final class ANAJAPIServer {
         webSocketHub.broadcast(event: envelope)
     }
 
+    private func allowedMethods(for path: String) -> [String]? {
+        let components = path.split(separator: "/").map(String.init)
+        guard components.first == "api" else { return nil }
+
+        if components.count == 2 {
+            switch components[1] {
+            case "health": return ["GET"]
+            case "clients": return ["GET", "POST"]
+            case "projects": return ["GET", "POST"]
+            case "tasks": return ["GET", "POST"]
+            case "notes": return ["GET", "POST"]
+            case "ledger": return ["GET"]
+            case "notify": return ["POST"]
+            case "events": return ["GET"]
+            case "memory": return ["GET", "POST"]
+            case "invoices": return ["GET", "POST"]
+            case "settings": return ["GET", "PATCH"]
+            default: break
+            }
+        }
+
+        if components.count == 3 {
+            switch components[1] {
+            case "openclaw":
+                if components[2] == "webhook" { return ["POST"] }
+            case "commands":
+                if components[2] == "execute" { return ["POST"] }
+            case "events":
+                if components[2] == "stream" { return ["GET"] }
+            case "memory":
+                if components[2] == "changes" { return ["GET"] }
+                if components[2] == "sync" { return ["POST"] }
+            case "agents":
+                if components[2] == "run" { return ["POST"] }
+            case "tasks":
+                return ["PATCH", "DELETE"]
+            case "projects":
+                return ["GET", "PATCH", "DELETE"]
+            case "clients":
+                return ["PATCH"]
+            case "notes":
+                return ["PATCH"]
+            case "invoices":
+                return ["GET"]
+            default:
+                break
+            }
+        }
+
+        if components.count == 4 {
+            if components[1] == "agents", components[2] == "runs" {
+                return ["GET"]
+            }
+            if components[1] == "clients", components[3] == "projects" {
+                return ["GET"]
+            }
+            if components[1] == "invoices", components[3] == "pdf" {
+                return ["GET"]
+            }
+        }
+
+        return nil
+    }
+
     private func processRequest(rawData: Data) -> HTTPResponse {
         guard let request = HTTPRequest.parse(rawData) else {
             return .json(status: 400, body: ["error": "Malformed HTTP request"])
@@ -224,6 +288,20 @@ final class ANAJAPIServer {
         do {
             let context = ModelContext(modelContainer)
             let path = request.path
+            let requestID = UUID().uuidString
+
+            if let allowed = allowedMethods(for: path), !allowed.contains(request.method) {
+                return .json(
+                    status: 405,
+                    body: [
+                        "error": "Method Not Allowed",
+                        "code": "METHOD_NOT_ALLOWED",
+                        "hint": "Use \(allowed.joined(separator: ", ")) for \(path)",
+                        "requestId": requestID
+                    ],
+                    headers: ["Allow": allowed.joined(separator: ", ")]
+                )
+            }
 
             if request.method == "GET" && path == "/api/health" {
                 return .json(status: 200, body: [
@@ -235,11 +313,21 @@ final class ANAJAPIServer {
             }
 
             if request.method == "GET" && path == "/api/clients" {
+                let includeArchived = request.queryItems["includeArchived"] == "true"
+                let search = request.queryItems["search"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let limit = min(max(Int(request.queryItems["limit"] ?? "100") ?? 100, 1), 500)
+                let offset = max(Int(request.queryItems["offset"] ?? "0") ?? 0, 0)
+
                 let clients = try context.fetch(FetchDescriptor<Client>())
-                    .filter { !$0.isArchived }
+                    .filter { includeArchived || !$0.isArchived }
+                    .filter { client in
+                        guard let search, !search.isEmpty else { return true }
+                        return client.name.lowercased().contains(search) || client.industry.lowercased().contains(search)
+                    }
                     .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-                let payload = clients.map { client in
+                let paged = Array(clients.dropFirst(offset).prefix(limit))
+                let payload = paged.map { client in
                     ClientResponse(
                         id: client.id.uuidString,
                         name: client.name,
@@ -254,15 +342,30 @@ final class ANAJAPIServer {
 
             if request.method == "GET" && path == "/api/projects" {
                 let clientFilter = request.queryItems["clientId"]
+                let statusFilter = request.queryItems["status"]?.lowercased()
+                let includeArchived = request.queryItems["includeArchived"] == "true"
+                let search = request.queryItems["search"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let limit = min(max(Int(request.queryItems["limit"] ?? "100") ?? 100, 1), 500)
+                let offset = max(Int(request.queryItems["offset"] ?? "0") ?? 0, 0)
                 let projects = try context.fetch(FetchDescriptor<Project>())
-                    .filter { !$0.isArchived }
+                    .filter { includeArchived || !$0.isArchived }
                     .filter { project in
                         guard let clientFilter else { return true }
                         return project.client?.id.uuidString == clientFilter
                     }
+                    .filter { project in
+                        guard let statusFilter, !statusFilter.isEmpty else { return true }
+                        return project.status.rawValue.lowercased() == statusFilter
+                    }
+                    .filter { project in
+                        guard let search, !search.isEmpty else { return true }
+                        return project.title.lowercased().contains(search)
+                            || project.projectDescription.lowercased().contains(search)
+                    }
                     .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
 
-                let payload = projects.map { project in
+                let paged = Array(projects.dropFirst(offset).prefix(limit))
+                let payload = paged.map { project in
                     ProjectResponse(
                         id: project.id.uuidString,
                         title: project.title,
@@ -278,12 +381,149 @@ final class ANAJAPIServer {
                 return .encodable(200, payload)
             }
 
+            if request.method == "GET", let projectID = request.projectIDFromPath {
+                guard let projectUUID = UUID(uuidString: projectID) else {
+                    return .json(status: 400, body: ["error": "Invalid project id", "code": "INVALID_PROJECT_ID"])
+                }
+
+                guard let project = try context.fetch(FetchDescriptor<Project>()).first(where: { $0.id == projectUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Project not found", "code": "PROJECT_NOT_FOUND"])
+                }
+
+                let taskPayload = project.tasks
+                    .filter { !$0.isArchived }
+                    .sorted { $0.priority > $1.priority }
+                    .map { task in
+                        [
+                            "id": task.id.uuidString,
+                            "content": task.content,
+                            "isDone": task.isDone,
+                            "priority": task.priority,
+                            "dueDate": task.dueDate?.iso8601 ?? "",
+                            "estimatedHours": task.estimatedHours,
+                            "actualHours": task.actualHours
+                        ] as [String: Any]
+                    }
+
+                return .json(status: 200, body: [
+                    "id": project.id.uuidString,
+                    "title": project.title,
+                    "projectDescription": project.projectDescription,
+                    "status": project.status.rawValue,
+                    "clientId": project.client?.id.uuidString ?? "",
+                    "clientName": project.client?.name ?? "",
+                    "accentHex": project.accentHex,
+                    "budget": project.budget,
+                    "hourlyRate": project.hourlyRate,
+                    "internalRate": project.internalRate,
+                    "additionalCosts": project.additionalCosts,
+                    "deadline": project.deadline?.iso8601 ?? "",
+                    "figmaURL": project.figmaURL,
+                    "githubURL": project.githubURL,
+                    "liveURL": project.liveURL,
+                    "localPath": project.localPath,
+                    "tasks": taskPayload
+                ])
+            }
+
+            if request.method == "PATCH", let projectID = request.projectIDFromPath {
+                guard let projectUUID = UUID(uuidString: projectID) else {
+                    return .json(status: 400, body: ["error": "Invalid project id"])
+                }
+
+                guard let project = try context.fetch(FetchDescriptor<Project>()).first(where: { $0.id == projectUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Project not found"])
+                }
+
+                let patch: UpdateProjectRequest = try request.decodeJSON()
+
+                if let title = patch.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                    project.title = title
+                }
+                if let description = patch.projectDescription {
+                    project.projectDescription = description
+                }
+                if let status = patch.status?.lowercased(), let mapped = ProjectStatus(rawValue: status) {
+                    project.status = mapped
+                }
+                if let accentHex = patch.accentHex, !accentHex.isEmpty {
+                    project.accentHex = accentHex
+                }
+                if let budget = patch.budget { project.budget = budget }
+                if let hourlyRate = patch.hourlyRate { project.hourlyRate = hourlyRate }
+                if let internalRate = patch.internalRate { project.internalRate = internalRate }
+                if let additionalCosts = patch.additionalCosts { project.additionalCosts = additionalCosts }
+                if let figmaURL = patch.figmaURL { project.figmaURL = figmaURL }
+                if let githubURL = patch.githubURL { project.githubURL = githubURL }
+                if let liveURL = patch.liveURL { project.liveURL = liveURL }
+                if let localPath = patch.localPath { project.localPath = localPath }
+                if let isPinned = patch.isPinned { project.isPinned = isPinned }
+
+                if patch.clearDeadline == true {
+                    project.deadline = nil
+                } else if let deadline = patch.deadline?.asISODate {
+                    project.deadline = deadline
+                }
+
+                if let clientID = patch.clientId {
+                    if clientID.isEmpty {
+                        project.client = nil
+                    } else if let clientUUID = UUID(uuidString: clientID),
+                              let client = try context.fetch(FetchDescriptor<Client>()).first(where: { $0.id == clientUUID && !$0.isArchived }) {
+                        project.client = client
+                    }
+                }
+
+                logActivity("Project Updated", subtitle: project.title, context: context)
+                try saveAndNotify(context)
+                emitRealtimeEvent(event: "project.updated", entity: "project", entityId: project.id.uuidString, payload: [
+                    "title": project.title,
+                    "status": project.status.rawValue
+                ])
+
+                return .encodable(200, ProjectResponse(
+                    id: project.id.uuidString,
+                    title: project.title,
+                    status: project.status.rawValue,
+                    clientID: project.client?.id.uuidString,
+                    clientName: project.client?.name,
+                    budget: project.budget,
+                    deadline: project.deadline?.iso8601,
+                    activeTaskCount: project.tasks.filter { !$0.isArchived && !$0.isDone }.count
+                ))
+            }
+
+            if request.method == "DELETE", let projectID = request.projectIDFromPath {
+                guard let projectUUID = UUID(uuidString: projectID) else {
+                    return .json(status: 400, body: ["error": "Invalid project id"])
+                }
+
+                guard let project = try context.fetch(FetchDescriptor<Project>()).first(where: { $0.id == projectUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Project not found"])
+                }
+
+                project.isArchived = true
+                logActivity("Project Archived", subtitle: project.title, context: context)
+                try saveAndNotify(context)
+                emitRealtimeEvent(event: "project.archived", entity: "project", entityId: project.id.uuidString, payload: [
+                    "title": project.title
+                ])
+
+                return .json(status: 200, body: [
+                    "status": "archived",
+                    "id": project.id.uuidString
+                ])
+            }
+
             if request.method == "GET" && path == "/api/tasks" {
                 let includeDone = request.queryItems["includeDone"] == "true"
                 let projectFilter = request.queryItems["projectId"]
+                let includeArchived = request.queryItems["includeArchived"] == "true"
+                let limit = min(max(Int(request.queryItems["limit"] ?? "100") ?? 100, 1), 500)
+                let offset = max(Int(request.queryItems["offset"] ?? "0") ?? 0, 0)
 
                 let tasks = try context.fetch(FetchDescriptor<AgencyTask>())
-                    .filter { !$0.isArchived }
+                    .filter { includeArchived || !$0.isArchived }
                     .filter { includeDone || !$0.isDone }
                     .filter { task in
                         guard let projectFilter else { return true }
@@ -294,7 +534,8 @@ final class ANAJAPIServer {
                         return lhs.content.localizedCaseInsensitiveCompare(rhs.content) == .orderedAscending
                     }
 
-                let payload = tasks.map { task in
+                let paged = Array(tasks.dropFirst(offset).prefix(limit))
+                let payload = paged.map { task in
                     TaskResponse(
                         id: task.id.uuidString,
                         content: task.content,
@@ -335,6 +576,10 @@ final class ANAJAPIServer {
                 context.insert(task)
                 logActivity("Task Created", subtitle: task.content, context: context)
                 try saveAndNotify(context)
+                emitRealtimeEvent(event: "task.created", entity: "task", entityId: task.id.uuidString, payload: [
+                    "content": task.content,
+                    "projectId": task.project?.id.uuidString ?? ""
+                ])
 
                 return .encodable(201, TaskResponse(from: task))
             }
@@ -372,7 +617,33 @@ final class ANAJAPIServer {
 
                 logActivity("Task Updated", subtitle: task.content, context: context)
                 try saveAndNotify(context)
+                emitRealtimeEvent(event: "task.updated", entity: "task", entityId: task.id.uuidString, payload: [
+                    "isDone": task.isDone,
+                    "priority": task.priority
+                ])
                 return .encodable(200, TaskResponse(from: task))
+            }
+
+            if request.method == "DELETE", let taskID = request.taskIDFromPath {
+                guard let taskUUID = UUID(uuidString: taskID) else {
+                    return .json(status: 400, body: ["error": "Invalid task id"])
+                }
+
+                guard let task = try context.fetch(FetchDescriptor<AgencyTask>()).first(where: { $0.id == taskUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Task not found"])
+                }
+
+                task.isArchived = true
+                logActivity("Task Archived", subtitle: task.content, context: context)
+                try saveAndNotify(context)
+                emitRealtimeEvent(event: "task.archived", entity: "task", entityId: task.id.uuidString, payload: [
+                    "content": task.content
+                ])
+
+                return .json(status: 200, body: [
+                    "status": "archived",
+                    "id": task.id.uuidString
+                ])
             }
 
             if request.method == "POST" && path == "/api/clients" {
@@ -385,6 +656,9 @@ final class ANAJAPIServer {
                 context.insert(client)
                 logActivity("Client Created", subtitle: client.name, context: context)
                 try saveAndNotify(context)
+                emitRealtimeEvent(event: "client.created", entity: "client", entityId: client.id.uuidString, payload: [
+                    "name": client.name
+                ])
 
                 let payload = ClientResponse(
                     id: client.id.uuidString,
@@ -394,6 +668,80 @@ final class ANAJAPIServer {
                     projectIDs: []
                 )
                 return .encodable(201, payload)
+            }
+
+            if request.method == "PATCH", let clientID = request.clientIDFromPath {
+                guard let clientUUID = UUID(uuidString: clientID) else {
+                    return .json(status: 400, body: ["error": "Invalid client id"])
+                }
+
+                guard let client = try context.fetch(FetchDescriptor<Client>()).first(where: { $0.id == clientUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Client not found"])
+                }
+
+                let patch: UpdateClientRequest = try request.decodeJSON()
+
+                if let name = patch.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                    client.name = name
+                }
+                if let industry = patch.industry {
+                    client.industry = industry
+                }
+                if let brandHex = patch.brandHex, !brandHex.isEmpty {
+                    client.brandHex = brandHex
+                }
+                if let isPinned = patch.isPinned {
+                    client.isPinned = isPinned
+                }
+
+                logActivity("Client Updated", subtitle: client.name, context: context)
+                try saveAndNotify(context)
+                emitRealtimeEvent(event: "client.updated", entity: "client", entityId: client.id.uuidString, payload: [
+                    "name": client.name
+                ])
+
+                let payload = ClientResponse(
+                    id: client.id.uuidString,
+                    name: client.name,
+                    industry: client.industry,
+                    activeProjectCount: client.projects.filter { !$0.isArchived && $0.status != .completed }.count,
+                    projectIDs: client.projects.filter { !$0.isArchived }.map { $0.id.uuidString }
+                )
+                return .encodable(200, payload)
+            }
+
+            if request.method == "GET", let clientID = request.clientProjectListIDFromPath {
+                guard let clientUUID = UUID(uuidString: clientID) else {
+                    return .json(status: 400, body: ["error": "Invalid client id"])
+                }
+
+                guard let client = try context.fetch(FetchDescriptor<Client>()).first(where: { $0.id == clientUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Client not found"])
+                }
+
+                let limit = min(max(Int(request.queryItems["limit"] ?? "100") ?? 100, 1), 500)
+                let offset = max(Int(request.queryItems["offset"] ?? "0") ?? 0, 0)
+                let includeArchived = request.queryItems["includeArchived"] == "true"
+
+                let rows = client.projects
+                    .filter { includeArchived || !$0.isArchived }
+                    .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+                let paged = Array(rows.dropFirst(offset).prefix(limit))
+
+                let payload = paged.map { project in
+                    ProjectResponse(
+                        id: project.id.uuidString,
+                        title: project.title,
+                        status: project.status.rawValue,
+                        clientID: client.id.uuidString,
+                        clientName: client.name,
+                        budget: project.budget,
+                        deadline: project.deadline?.iso8601,
+                        activeTaskCount: project.tasks.filter { !$0.isArchived && !$0.isDone }.count
+                    )
+                }
+
+                return .encodable(200, payload)
             }
 
             if request.method == "POST" && path == "/api/projects" {
@@ -420,6 +768,10 @@ final class ANAJAPIServer {
                 context.insert(project)
                 logActivity("Project Created", subtitle: project.title, context: context)
                 try saveAndNotify(context)
+                emitRealtimeEvent(event: "project.created", entity: "project", entityId: project.id.uuidString, payload: [
+                    "title": project.title,
+                    "status": project.status.rawValue
+                ])
 
                 return .encodable(201, ProjectResponse(
                     id: project.id.uuidString,
@@ -457,11 +809,111 @@ final class ANAJAPIServer {
                 context.insert(note)
                 logActivity("Note Created", subtitle: note.title, context: context)
                 try saveAndNotify(context)
+                emitRealtimeEvent(event: "note.created", entity: "note", entityId: note.id.uuidString, payload: [
+                    "title": note.title
+                ])
 
                 return .json(status: 201, body: [
                     "id": note.id.uuidString,
                     "title": note.title,
                     "createdAt": note.createdAt.iso8601
+                ])
+            }
+
+            if request.method == "GET" && path == "/api/notes" {
+                let includeArchived = request.queryItems["includeArchived"] == "true"
+                let projectFilter = request.queryItems["projectId"]
+                let clientFilter = request.queryItems["clientId"]
+                let search = request.queryItems["search"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let limit = min(max(Int(request.queryItems["limit"] ?? "100") ?? 100, 1), 500)
+                let offset = max(Int(request.queryItems["offset"] ?? "0") ?? 0, 0)
+
+                let notes = try context.fetch(FetchDescriptor<Note>())
+                    .filter { includeArchived || !$0.isArchived }
+                    .filter { note in
+                        guard let projectFilter else { return true }
+                        return note.project?.id.uuidString == projectFilter
+                    }
+                    .filter { note in
+                        guard let clientFilter else { return true }
+                        return note.client?.id.uuidString == clientFilter
+                    }
+                    .filter { note in
+                        guard let search, !search.isEmpty else { return true }
+                        return note.title.lowercased().contains(search) || note.content.lowercased().contains(search)
+                    }
+                    .sorted { $0.lastModified > $1.lastModified }
+
+                let paged = Array(notes.dropFirst(offset).prefix(limit))
+                let payload = paged.map { note in
+                    [
+                        "id": note.id.uuidString,
+                        "title": note.title,
+                        "content": note.content,
+                        "createdAt": note.createdAt.iso8601,
+                        "lastModified": note.lastModified.iso8601,
+                        "projectId": note.project?.id.uuidString ?? "",
+                        "clientId": note.client?.id.uuidString ?? "",
+                        "isPinned": note.isPinned
+                    ] as [String: Any]
+                }
+
+                return .json(status: 200, body: [
+                    "items": payload,
+                    "count": payload.count
+                ])
+            }
+
+            if request.method == "PATCH", let noteID = request.noteIDFromPath {
+                guard let noteUUID = UUID(uuidString: noteID) else {
+                    return .json(status: 400, body: ["error": "Invalid note id"])
+                }
+
+                guard let note = try context.fetch(FetchDescriptor<Note>()).first(where: { $0.id == noteUUID && !$0.isArchived }) else {
+                    return .json(status: 404, body: ["error": "Note not found"])
+                }
+
+                let patch: UpdateNoteRequest = try request.decodeJSON()
+                if let title = patch.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                    note.title = title
+                }
+                if let content = patch.content {
+                    note.content = content
+                }
+                if let isPinned = patch.isPinned {
+                    note.isPinned = isPinned
+                }
+                if let isArchived = patch.isArchived {
+                    note.isArchived = isArchived
+                }
+                if let projectID = patch.projectId {
+                    if projectID.isEmpty {
+                        note.project = nil
+                    } else if let projectUUID = UUID(uuidString: projectID),
+                              let project = try context.fetch(FetchDescriptor<Project>()).first(where: { $0.id == projectUUID && !$0.isArchived }) {
+                        note.project = project
+                    }
+                }
+                if let clientID = patch.clientId {
+                    if clientID.isEmpty {
+                        note.client = nil
+                    } else if let clientUUID = UUID(uuidString: clientID),
+                              let client = try context.fetch(FetchDescriptor<Client>()).first(where: { $0.id == clientUUID && !$0.isArchived }) {
+                        note.client = client
+                    }
+                }
+
+                note.lastModified = Date()
+                logActivity("Note Updated", subtitle: note.title, context: context)
+                try saveAndNotify(context)
+                emitRealtimeEvent(event: "note.updated", entity: "note", entityId: note.id.uuidString, payload: [
+                    "title": note.title
+                ])
+
+                return .json(status: 200, body: [
+                    "id": note.id.uuidString,
+                    "title": note.title,
+                    "lastModified": note.lastModified.iso8601
                 ])
             }
 
@@ -492,6 +944,175 @@ final class ANAJAPIServer {
                     "totalPaid": paidInvoices,
                     "outstanding": outstanding
                 ])
+            }
+
+            if request.method == "GET" && path == "/api/invoices" {
+                let projectFilter = request.queryItems["projectId"]
+                let clientFilter = request.queryItems["clientId"]
+                let statusFilter = request.queryItems["status"]?.lowercased()
+                let limit = min(max(Int(request.queryItems["limit"] ?? "100") ?? 100, 1), 500)
+                let offset = max(Int(request.queryItems["offset"] ?? "0") ?? 0, 0)
+
+                let invoices = try context.fetch(FetchDescriptor<Invoice>())
+                    .filter { invoice in
+                        guard let projectFilter else { return true }
+                        return invoice.project?.id.uuidString == projectFilter
+                    }
+                    .filter { invoice in
+                        guard let clientFilter else { return true }
+                        return invoice.client?.id.uuidString == clientFilter
+                    }
+                    .filter { invoice in
+                        guard let statusFilter, !statusFilter.isEmpty else { return true }
+                        return invoice.status.rawValue.lowercased() == statusFilter
+                    }
+                    .sorted { $0.issueDate > $1.issueDate }
+
+                let paged = Array(invoices.dropFirst(offset).prefix(limit))
+                let payload = paged.map { invoice in
+                    [
+                        "id": invoice.id.uuidString,
+                        "invoiceNumber": invoice.invoiceNumber,
+                        "status": invoice.status.rawValue,
+                        "issueDate": invoice.issueDate.iso8601,
+                        "dueDate": invoice.dueDate.iso8601,
+                        "projectId": invoice.project?.id.uuidString ?? "",
+                        "clientId": invoice.client?.id.uuidString ?? "",
+                        "subtotal": invoice.subtotal,
+                        "taxAmount": invoice.taxAmount,
+                        "total": invoice.total
+                    ] as [String: Any]
+                }
+
+                return .json(status: 200, body: [
+                    "items": payload,
+                    "count": payload.count
+                ])
+            }
+
+            if request.method == "POST" && path == "/api/invoices" {
+                let input: CreateInvoiceRequest = try request.decodeJSON()
+
+                let invoiceNumber = input.invoiceNumber?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? (input.invoiceNumber ?? "")
+                    : "INV-\(Int(Date().timeIntervalSince1970))"
+
+                let invoice = Invoice(
+                    invoiceNumber: invoiceNumber,
+                    issueDate: input.issueDate?.asISODate ?? Date(),
+                    dueDate: input.dueDate?.asISODate ?? Calendar.current.date(byAdding: .day, value: 30, to: Date()) ?? Date(),
+                    status: InvoiceStatus(rawValue: input.status ?? "") ?? .draft,
+                    notes: input.notes ?? "",
+                    taxRate: input.taxRate ?? 0,
+                    discount: input.discount ?? 0,
+                    businessName: input.businessName ?? "",
+                    businessAddress: input.businessAddress ?? "",
+                    businessEmail: input.businessEmail ?? "",
+                    businessPhone: input.businessPhone ?? ""
+                )
+
+                if let projectID = input.projectId,
+                   let projectUUID = UUID(uuidString: projectID),
+                   let project = try context.fetch(FetchDescriptor<Project>()).first(where: { $0.id == projectUUID && !$0.isArchived }) {
+                    invoice.project = project
+                }
+
+                if let clientID = input.clientId,
+                   let clientUUID = UUID(uuidString: clientID),
+                   let client = try context.fetch(FetchDescriptor<Client>()).first(where: { $0.id == clientUUID && !$0.isArchived }) {
+                    invoice.client = client
+                }
+
+                for item in input.lineItems ?? [] {
+                    let line = InvoiceItem(
+                        itemDescription: item.itemDescription,
+                        quantity: item.quantity ?? 1,
+                        rate: item.rate ?? 0
+                    )
+                    line.invoice = invoice
+                    invoice.lineItems.append(line)
+                }
+
+                context.insert(invoice)
+                logActivity("Invoice Created", subtitle: invoice.invoiceNumber, context: context)
+                try saveAndNotify(context)
+                emitRealtimeEvent(event: "invoice.created", entity: "invoice", entityId: invoice.id.uuidString, payload: [
+                    "invoiceNumber": invoice.invoiceNumber,
+                    "total": invoice.total
+                ])
+
+                return .json(status: 201, body: [
+                    "id": invoice.id.uuidString,
+                    "invoiceNumber": invoice.invoiceNumber,
+                    "status": invoice.status.rawValue,
+                    "total": invoice.total
+                ])
+            }
+
+            if request.method == "GET", let invoiceID = request.invoiceIDFromPath {
+                guard let invoiceUUID = UUID(uuidString: invoiceID) else {
+                    return .json(status: 400, body: ["error": "Invalid invoice id"])
+                }
+
+                guard let invoice = try context.fetch(FetchDescriptor<Invoice>()).first(where: { $0.id == invoiceUUID }) else {
+                    return .json(status: 404, body: ["error": "Invoice not found"])
+                }
+
+                return .json(status: 200, body: [
+                    "id": invoice.id.uuidString,
+                    "invoiceNumber": invoice.invoiceNumber,
+                    "status": invoice.status.rawValue,
+                    "issueDate": invoice.issueDate.iso8601,
+                    "dueDate": invoice.dueDate.iso8601,
+                    "notes": invoice.notes,
+                    "subtotal": invoice.subtotal,
+                    "taxAmount": invoice.taxAmount,
+                    "total": invoice.total
+                ])
+            }
+
+            if request.method == "GET", let invoicePDFID = request.invoicePDFIDFromPath {
+                guard let invoiceUUID = UUID(uuidString: invoicePDFID) else {
+                    return .json(status: 400, body: ["error": "Invalid invoice id"])
+                }
+
+                guard let invoice = try context.fetch(FetchDescriptor<Invoice>()).first(where: { $0.id == invoiceUUID }) else {
+                    return .json(status: 404, body: ["error": "Invoice not found"])
+                }
+
+                let pdf = """
+                %PDF-1.4
+                1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+                2 0 obj << /Type /Pages /Count 1 /Kids [3 0 R] >> endobj
+                3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >> endobj
+                4 0 obj << /Length 85 >> stream
+                BT /F1 16 Tf 72 720 Td (Invoice \(invoice.invoiceNumber) - Total \(invoice.total)) Tj ET
+                endstream endobj
+                xref 0 5
+                0000000000 65535 f
+                0000000010 00000 n
+                0000000060 00000 n
+                0000000120 00000 n
+                0000000225 00000 n
+                trailer << /Size 5 /Root 1 0 R >>
+                startxref
+                340
+                %%EOF
+                """
+                return .raw(status: 200, contentType: "application/pdf", body: Data(pdf.utf8))
+            }
+
+            if request.method == "GET" && path == "/api/settings" {
+                return .json(status: 200, body: currentSettingsPayload())
+            }
+
+            if request.method == "PATCH" && path == "/api/settings" {
+                let patch = try request.decodeJSONDictionary()
+                applySettingsPatch(patch)
+                emitRealtimeEvent(event: "settings.updated", entity: "settings", entityId: nil, payload: [
+                    "keys": Array(patch.keys).joined(separator: ",")
+                ])
+                return .json(status: 200, body: currentSettingsPayload())
             }
 
             if request.method == "POST" && path == "/api/notify" {
@@ -833,17 +1454,23 @@ final class ANAJAPIServer {
                 return .encodable(200, AgentRunResponse(from: run, duplicate: false))
             }
 
-            return .json(status: 404, body: ["error": "Endpoint not found"])
+            return .json(status: 404, body: [
+                "error": "Endpoint not found",
+                "code": "ENDPOINT_NOT_FOUND",
+                "hint": "Verify the request path and method.",
+                "requestId": requestID
+            ])
         } catch {
             return .json(status: 500, body: [
                 "error": error.localizedDescription,
-                "code": "INTERNAL_SERVER_ERROR"
+                "code": "INTERNAL_SERVER_ERROR",
+                "requestId": UUID().uuidString
             ])
         }
     }
 
     private func executeCommand(command: String, payload: [String: Any], context: ModelContext) throws -> [String: Any] {
-        switch command {
+        switch command.lowercased() {
         case "create_task":
             guard let content = payload["content"] as? String,
                   !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1005,6 +1632,21 @@ final class ANAJAPIServer {
                 "status": project.status.rawValue
             ]
 
+        case "navigate":
+            let result = try AppCommandCenter.shared.handleExternalCommand(command: "navigate", params: payload)
+            emitRealtimeEvent(event: "ui.navigated", entity: "navigation", entityId: nil, payload: result)
+            return result
+
+        case "refresh":
+            let result = try AppCommandCenter.shared.handleExternalCommand(command: "refresh", params: payload)
+            emitRealtimeEvent(event: "ui.refreshed", entity: "ui", entityId: nil, payload: result)
+            return result
+
+        case "fillform":
+            let result = try AppCommandCenter.shared.handleExternalCommand(command: "fillForm", params: payload)
+            emitRealtimeEvent(event: "ui.form_filled", entity: "ui", entityId: nil, payload: result)
+            return result
+
         default:
             throw APICommandError(status: 422, message: "Unsupported command: \(command)")
         }
@@ -1026,6 +1668,46 @@ final class ANAJAPIServer {
         context.insert(Activity(title: title, subtitle: subtitle, type: .system))
     }
 
+    private func currentSettingsPayload() -> [String: Any] {
+        let defaults = UserDefaults.standard
+        return [
+            "userName": defaults.string(forKey: "userName") ?? "Jesse",
+            "userRole": defaults.string(forKey: "userRole") ?? "Creative Director",
+            "accentColor": defaults.string(forKey: "accentColor") ?? "#5AE6FF",
+            "glassOpacity": defaults.double(forKey: "glassOpacity"),
+            "backgroundStyle": defaults.string(forKey: "backgroundStyle") ?? "",
+            "appTheme": defaults.string(forKey: "appTheme") ?? "Dark",
+            "openAIKey": defaults.string(forKey: "openAIKey") ?? "",
+            "googleAPIKey": defaults.string(forKey: "googleAPIKey") ?? "",
+            "ollamaBaseURL": defaults.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434/api",
+            "openClawBaseURL": defaults.string(forKey: "openClawBaseURL") ?? "http://127.0.0.1:18890",
+            "openClawAPIKey": defaults.string(forKey: "openClawAPIKey") ?? "",
+            "anajAPIKey": defaults.string(forKey: "anajAPIKey") ?? ""
+        ]
+    }
+
+    private func applySettingsPatch(_ patch: [String: Any]) {
+        let defaults = UserDefaults.standard
+        let stringKeys: Set<String> = [
+            "userName", "userRole", "accentColor", "backgroundStyle", "appTheme",
+            "openAIKey", "googleAPIKey", "ollamaBaseURL", "openClawBaseURL", "openClawAPIKey", "anajAPIKey"
+        ]
+
+        for (key, value) in patch {
+            if stringKeys.contains(key), let text = value as? String {
+                defaults.set(text, forKey: key)
+                continue
+            }
+            if key == "glassOpacity", let number = value as? Double {
+                defaults.set(number, forKey: key)
+                continue
+            }
+            if key == "glassOpacity", let number = value as? Int {
+                defaults.set(Double(number), forKey: key)
+            }
+        }
+    }
+
     private func serializeJSONObject(_ object: Any) -> String {
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
@@ -1036,9 +1718,6 @@ final class ANAJAPIServer {
     }
 
     private func authorize(request: HTTPRequest) -> Bool {
-#if DEBUG
-        return true
-#else
         let required = configuredAPIKey()
         // Local desktop builds often run without an explicit key configured.
         // In that case, allow requests and rely on localhost/network boundaries.
@@ -1057,7 +1736,6 @@ final class ANAJAPIServer {
         }
 
         return false
-#endif
     }
 
     private func configuredAPIKey() -> String {
@@ -1114,11 +1792,69 @@ private struct CreateProjectRequest: Decodable {
     let accentHex: String?
 }
 
+private struct UpdateProjectRequest: Decodable {
+    let title: String?
+    let projectDescription: String?
+    let status: String?
+    let clientId: String?
+    let budget: Double?
+    let deadline: String?
+    let clearDeadline: Bool?
+    let accentHex: String?
+    let figmaURL: String?
+    let githubURL: String?
+    let liveURL: String?
+    let localPath: String?
+    let hourlyRate: Double?
+    let internalRate: Double?
+    let additionalCosts: Double?
+    let isPinned: Bool?
+}
+
+private struct UpdateClientRequest: Decodable {
+    let name: String?
+    let industry: String?
+    let brandHex: String?
+    let isPinned: Bool?
+}
+
 private struct CreateNoteRequest: Decodable {
     let title: String
     let content: String?
     let projectId: String?
     let clientId: String?
+}
+
+private struct UpdateNoteRequest: Decodable {
+    let title: String?
+    let content: String?
+    let projectId: String?
+    let clientId: String?
+    let isPinned: Bool?
+    let isArchived: Bool?
+}
+
+private struct CreateInvoiceLineItemRequest: Decodable {
+    let itemDescription: String
+    let quantity: Double?
+    let rate: Double?
+}
+
+private struct CreateInvoiceRequest: Decodable {
+    let invoiceNumber: String?
+    let issueDate: String?
+    let dueDate: String?
+    let status: String?
+    let notes: String?
+    let taxRate: Double?
+    let discount: Double?
+    let businessName: String?
+    let businessAddress: String?
+    let businessEmail: String?
+    let businessPhone: String?
+    let projectId: String?
+    let clientId: String?
+    let lineItems: [CreateInvoiceLineItemRequest]?
 }
 
 private struct NotifyRequest: Decodable {
@@ -1302,9 +2038,63 @@ private struct HTTPRequest {
     }
 
     var taskIDFromPath: String? {
-        guard method == "PATCH" else { return nil }
+        guard method == "PATCH" || method == "DELETE" else { return nil }
         let components = path.split(separator: "/").map(String.init)
         guard components.count == 3, components[0] == "api", components[1] == "tasks" else {
+            return nil
+        }
+        return components[2]
+    }
+
+    var projectIDFromPath: String? {
+        guard method == "GET" || method == "PATCH" || method == "DELETE" else { return nil }
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 3, components[0] == "api", components[1] == "projects" else {
+            return nil
+        }
+        return components[2]
+    }
+
+    var clientIDFromPath: String? {
+        guard method == "PATCH" else { return nil }
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 3, components[0] == "api", components[1] == "clients" else {
+            return nil
+        }
+        return components[2]
+    }
+
+    var clientProjectListIDFromPath: String? {
+        guard method == "GET" else { return nil }
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 4, components[0] == "api", components[1] == "clients", components[3] == "projects" else {
+            return nil
+        }
+        return components[2]
+    }
+
+    var noteIDFromPath: String? {
+        guard method == "PATCH" else { return nil }
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 3, components[0] == "api", components[1] == "notes" else {
+            return nil
+        }
+        return components[2]
+    }
+
+    var invoiceIDFromPath: String? {
+        guard method == "GET" else { return nil }
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 3, components[0] == "api", components[1] == "invoices" else {
+            return nil
+        }
+        return components[2]
+    }
+
+    var invoicePDFIDFromPath: String? {
+        guard method == "GET" else { return nil }
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 4, components[0] == "api", components[1] == "invoices", components[3] == "pdf" else {
             return nil
         }
         return components[2]
@@ -1378,27 +2168,31 @@ private struct HTTPResponse {
     let reason: String
     let contentType: String
     let body: Data
+    let headers: [String: String]
 
-    static func json(status: Int, body: [String: Any]) -> HTTPResponse {
+    static func json(status: Int, body: [String: Any], headers: [String: String] = [:]) -> HTTPResponse {
         let data = (try? JSONSerialization.data(withJSONObject: body, options: [])) ?? Data("{}".utf8)
-        return HTTPResponse(status: status, reason: Self.reason(for: status), contentType: "application/json", body: data)
+        return HTTPResponse(status: status, reason: Self.reason(for: status), contentType: "application/json", body: data, headers: headers)
     }
 
     static func encodable<T: Encodable>(_ status: Int, _ payload: T) -> HTTPResponse {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = (try? encoder.encode(payload)) ?? Data("{}".utf8)
-        return HTTPResponse(status: status, reason: reason(for: status), contentType: "application/json", body: data)
+        return HTTPResponse(status: status, reason: reason(for: status), contentType: "application/json", body: data, headers: [:])
     }
 
     static func raw(status: Int, contentType: String, body: Data) -> HTTPResponse {
-        HTTPResponse(status: status, reason: reason(for: status), contentType: contentType, body: body)
+        HTTPResponse(status: status, reason: reason(for: status), contentType: contentType, body: body, headers: [:])
     }
 
     func serialized() -> Data {
         var header = "HTTP/1.1 \(status) \(reason)\r\n"
         header += "Content-Type: \(contentType)\r\n"
         header += "Content-Length: \(body.count)\r\n"
+        for (key, value) in headers {
+            header += "\(key): \(value)\r\n"
+        }
         header += "Connection: close\r\n"
         header += "\r\n"
 
@@ -1412,6 +2206,7 @@ private struct HTTPResponse {
         case 202: return "Accepted"
         case 400: return "Bad Request"
         case 401: return "Unauthorized"
+        case 405: return "Method Not Allowed"
         case 404: return "Not Found"
         case 409: return "Conflict"
         case 422: return "Unprocessable Entity"

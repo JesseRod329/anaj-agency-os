@@ -4,15 +4,15 @@ import Combine
 
 struct ProjectsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Project.title, order: .forward) private var projectRows: [Project]
+    @Query(sort: \Client.name, order: .forward) private var clientRows: [Client]
 
     @State private var newTitle: String = ""
     @State private var selectedClient: Client? = nil
     @State private var accentHex: String = "#5AE6FF"
     @State private var showSuccess = false
     @State private var filterStatus: ProjectStatus? = nil
-    @State private var projectRows: [Project] = []
-    @State private var clientRows: [Client] = []
-    @State private var refreshTimer: Timer? = nil
+    @StateObject private var commandCenter = AppCommandCenter.shared
 
     // Filter archived projects
     private var visibleProjects: [Project] {
@@ -96,7 +96,7 @@ struct ProjectsView: View {
                 .background(Color.white.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                Button(action: createProject) {
+                Button(action: { createProject() }) {
                     HStack(spacing: 6) {
                         Image(systemName: "plus")
                         Text("Create")
@@ -140,32 +140,51 @@ struct ProjectsView: View {
         }
         .padding(24)
         .onAppear {
-            refreshData()
-            startAutoRefresh()
-        }
-        .onDisappear {
-            stopAutoRefresh()
+            if let selectedClient,
+               clientRows.contains(where: { $0.id == selectedClient.id }) == false {
+                self.selectedClient = nil
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .anajDataDidChange)) { _ in
-            refreshData()
+            // SwiftData @Query refreshes automatically; this notification is retained
+            // for external events and diagnostics.
+        }
+        .onReceive(commandCenter.$pendingProjectDraft.compactMap { $0 }) { draft in
+            createProject(from: draft)
+            commandCenter.pendingProjectDraft = nil
         }
     }
 
-    private func createProject() {
-        guard !newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    private func createProject(from draft: AppCommandCenter.ProjectDraft? = nil) {
+        let title = (draft?.title ?? newTitle).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+
         withAnimation(.snappy) {
-            let proj = Project(title: newTitle, status: .flow, accentHex: accentHex)
-            proj.client = selectedClient
+            let proj = Project(
+                title: title,
+                projectDescription: draft?.projectDescription ?? "",
+                status: .flow,
+                accentHex: accentHex,
+                budget: draft?.budget ?? 0
+            )
+
+            if let draftClientID = draft?.clientId,
+               let draftClient = clientRows.first(where: { $0.id == draftClientID }) {
+                proj.client = draftClient
+            } else {
+                proj.client = selectedClient
+            }
             modelContext.insert(proj)
             
-            let activity = Activity(title: "New Project", subtitle: newTitle, type: .project)
+            let activity = Activity(title: "New Project", subtitle: title, type: .project)
             modelContext.insert(activity)
             
             do {
                 try modelContext.save()
-                newTitle = ""
-                selectedClient = nil
-                refreshData()
+                if draft == nil {
+                    newTitle = ""
+                    selectedClient = nil
+                }
                 withAnimation { showSuccess = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     withAnimation { showSuccess = false }
@@ -181,44 +200,10 @@ struct ProjectsView: View {
             modelContext.delete(project)
             do {
                 try modelContext.save()
-                refreshData()
             } catch {
                 print("Failed to delete project: \(error)")
             }
         }
-    }
-
-    private func refreshData() {
-        do {
-            let projectDescriptor = FetchDescriptor<Project>(
-                sortBy: [SortDescriptor(\Project.title, order: .forward)]
-            )
-            let clientDescriptor = FetchDescriptor<Client>(
-                sortBy: [SortDescriptor(\Client.name, order: .forward)]
-            )
-
-            projectRows = try modelContext.fetch(projectDescriptor)
-            clientRows = try modelContext.fetch(clientDescriptor)
-
-            if let selectedClient,
-               clientRows.contains(where: { $0.id == selectedClient.id }) == false {
-                self.selectedClient = nil
-            }
-        } catch {
-            print("Failed to refresh projects data: \(error)")
-        }
-    }
-
-    private func startAutoRefresh() {
-        refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-            refreshData()
-        }
-    }
-
-    private func stopAutoRefresh() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
     }
 }
 

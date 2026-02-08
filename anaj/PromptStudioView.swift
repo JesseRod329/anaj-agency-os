@@ -17,6 +17,7 @@ struct PromptStudioView: View {
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
     @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18890"
     @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
+    @AppStorage("anajAPIKey") private var anajAPIKey = ""
     @AppStorage("openClawStartupScriptPath") private var openClawStartupScriptPath = "/Users/jesse/anaj1/anaj/scripts/start-openclaw-bridge.sh"
     
     @State private var selectedPrompt: Prompt?
@@ -65,6 +66,7 @@ struct PromptStudioView: View {
                             openAIKey: $openAIKey,
                             googleAPIKey: $googleAPIKey,
                             openClawAPIKey: $openClawAPIKey,
+                            anajAPIKey: $anajAPIKey,
                             selectedProvider: $selectedProvider,
                             selectedLocalModel: $selectedLocalModel,
                             ollamaBaseURL: $ollamaBaseURL,
@@ -1575,6 +1577,14 @@ struct OpenClawProvider {
     }
 
     private static func friendlyHTTPError(statusCode: Int, baseURL: String, rawMessage: String) async -> String {
+        if statusCode == 401 {
+            return "Unauthorized from OpenClaw bridge at \(baseURL). Verify ANAJ API key configuration and bridge auth headers."
+        }
+
+        if statusCode == 403 {
+            return "Forbidden by OpenClaw bridge at \(baseURL). Check API key permissions and auth setup."
+        }
+
         if statusCode == 404 {
             if await isANAJLocalAPI(baseURL: baseURL) {
                 return "OpenClaw route not found at \(baseURL). This URL points to ANAJ local API on port 18790. Switch to http://127.0.0.1:18890 or use Connect OpenClaw."
@@ -1698,7 +1708,7 @@ final class OpenClawBridgeService: ObservableObject {
         showsLegacyPortFix = await detectLegacyPortConflict(baseURL: normalized)
     }
 
-    func connect(baseURL: String, startupScriptPath: String) async {
+    func connect(baseURL: String, startupScriptPath: String, anajAPIKey: String) async {
         let normalized = normalize(baseURL: baseURL)
         guard !normalized.isEmpty else {
             state = .failed
@@ -1724,7 +1734,7 @@ final class OpenClawBridgeService: ObservableObject {
         }
 
         do {
-            try launchBridge(scriptPath: scriptURL.path)
+            try launchBridge(scriptPath: scriptURL.path, anajAPIKey: anajAPIKey)
         } catch {
             state = .failed
             details = "Failed to start backend: \(error.localizedDescription)"
@@ -1749,7 +1759,7 @@ final class OpenClawBridgeService: ObservableObject {
         showsLegacyPortFix = await detectLegacyPortConflict(baseURL: normalized)
     }
 
-    private func launchBridge(scriptPath: String) throws {
+    private func launchBridge(scriptPath: String, anajAPIKey: String) throws {
         if let process, process.isRunning {
             return
         }
@@ -1761,6 +1771,10 @@ final class OpenClawBridgeService: ObservableObject {
 
         var env = ProcessInfo.processInfo.environment
         env["OPENCLAW_BRIDGE_PORT"] = "18890"
+        let trimmedKey = anajAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedKey.isEmpty {
+            env["ANAJ_API_KEY"] = trimmedKey
+        }
         next.environment = env
 
         let pipe = Pipe()
@@ -1975,6 +1989,7 @@ struct PromptStudioSettingsView: View {
     @Binding var openAIKey: String
     @Binding var googleAPIKey: String
     @Binding var openClawAPIKey: String
+    @Binding var anajAPIKey: String
     @Binding var selectedProvider: PromptStudioView.AIProvider
     @Binding var selectedLocalModel: String
     @Binding var ollamaBaseURL: String
@@ -2016,13 +2031,15 @@ struct PromptStudioSettingsView: View {
                         .font(.caption2)
 
                     SecureInput(title: "OpenClaw API Key (Optional)", text: $openClawAPIKey, color: .orange)
+                    SecureInput(title: "ANAJ API Key (for bridge auth)", text: $anajAPIKey, color: .orange)
 
                     HStack(spacing: 8) {
                         Button {
                             Task {
                                 await openClawBridge.connect(
                                     baseURL: openClawBaseURL,
-                                    startupScriptPath: openClawStartupScriptPath
+                                    startupScriptPath: openClawStartupScriptPath,
+                                    anajAPIKey: anajAPIKey
                                 )
                             }
                         } label: {

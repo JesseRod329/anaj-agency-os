@@ -1,11 +1,13 @@
 #if os(macOS)
 import SwiftUI
+import Combine
 
 struct LiquidContainerView<Content: View>: View {
     // 1. Navigation State
     @State private var selectedRoute: SidebarRoute = .dashboard
     @AppStorage("isLiquidEnabled") private var isLiquidEnabled = true
     @State private var showingCommandMenu = false
+    @StateObject private var commandCenter = AppCommandCenter.shared
     
     @ViewBuilder var content: Content
     
@@ -139,6 +141,22 @@ struct LiquidContainerView<Content: View>: View {
                 .opacity(0)
             }
         )
+        .onAppear {
+            selectedRoute = commandCenter.route
+        }
+        .onReceive(commandCenter.$route.removeDuplicates()) { route in
+            if route != selectedRoute {
+                selectedRoute = route
+            }
+        }
+        .onReceive(commandCenter.$refreshToken) { _ in
+            NotificationCenter.default.post(name: .anajDataDidChange, object: nil)
+        }
+        .onChange(of: selectedRoute) {
+            if commandCenter.route != selectedRoute {
+                commandCenter.setRoute(selectedRoute)
+            }
+        }
     }
 }
 #endif

@@ -91,6 +91,7 @@ struct SettingsView: View {
     @AppStorage("ollamaBaseURL") private var ollamaBaseURL = "http://localhost:11434/api"
     @AppStorage("openClawBaseURL") private var openClawBaseURL = "http://127.0.0.1:18890"
     @AppStorage("openClawAPIKey") private var openClawAPIKey = ""
+    @AppStorage("anajAPIKey") private var anajAPIKey = ""
     @AppStorage("selectedAIProvider") private var selectedProvider = PromptStudioView.AIProvider.local
     
     @State private var selectedTab: SettingsTab = .general
@@ -384,6 +385,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.4))
                     SecureSettingsInput(label: "OpenClaw API Key", text: $openClawAPIKey, icon: "key.fill")
+                    SecureSettingsInput(label: "ANAJ API Key", text: $anajAPIKey, icon: "lock.shield")
                 }
             }
             
