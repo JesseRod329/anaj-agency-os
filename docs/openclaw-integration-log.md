@@ -111,3 +111,16 @@ For each slice append:
   - Updated root README API endpoint list with expanded CRUD coverage.
   - Added realtime WebSocket endpoint and troubleshooting for `401`, `404`, and `405`.
   - Updated `docs/README.md` and `docs/support.md` with operator triage checklist.
+
+## Slice 9 - Persistent OpenClaw debug logging with request correlation
+- Commit: pending
+- Push: `origin codex/openclaw-full-control`
+- PR: https://github.com/JesseRod329/anaj-agency-os/pull/2
+- Validation:
+  - `xcodebuild -project /Users/jesse/anaj1/anaj/anaj.xcodeproj -scheme anaj -destination "platform=macOS" build`
+  - `xcodebuild test -project /Users/jesse/anaj1/anaj/anaj.xcodeproj -scheme anaj -destination "platform=macOS"`
+  - Both succeeded locally.
+- Notes:
+  - Added persistent file logger at `~/Library/Logs/ANAJ/openclaw.log`.
+  - Added API request/response log lines with shared request IDs and response `X-Request-Id` header.
+  - Added WebSocket handshake/command/ack/event/disconnect logs to the same file.

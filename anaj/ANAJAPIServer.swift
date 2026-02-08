@@ -10,6 +10,7 @@ final class ANAJAPIServer {
     private var modelContainer: ModelContainer?
     private let queue = DispatchQueue(label: "anaj.api.server", qos: .utility)
     private let webSocketHub = OpenClawWebSocketHub()
+    private let logger = ANAJLogger.shared
 
     private init() {}
 
@@ -28,8 +29,10 @@ final class ANAJAPIServer {
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    self.logger.info("api", "API listener ready", metadata: ["url": "http://127.0.0.1:\(port)"])
                     print("ANAJ API listening on http://127.0.0.1:\(port)")
                 case .failed(let error):
+                    self.logger.error("api", "API listener failed", metadata: ["error": error.localizedDescription])
                     print("ANAJ API failed: \(error)")
                 default:
                     break
@@ -40,6 +43,7 @@ final class ANAJAPIServer {
             self.apiListener = listener
             startWebSocketHub()
         } catch {
+            logger.error("api", "Failed to start API listener", metadata: ["error": error.localizedDescription])
             print("Failed to start ANAJ API: \(error)")
         }
     }
@@ -65,7 +69,50 @@ final class ANAJAPIServer {
                     return
                 }
 
-                let response = self.processRequest(rawData: data)
+                let requestID = UUID().uuidString
+                let requestPreview = HTTPRequest.parse(data)
+                let method = requestPreview?.method ?? "UNKNOWN"
+                let path = requestPreview?.path ?? "/unknown"
+
+                self.logger.info(
+                    "api",
+                    "Incoming request",
+                    requestID: requestID,
+                    metadata: [
+                        "method": method,
+                        "path": path,
+                        "bodyBytes": "\(data.count)"
+                    ]
+                )
+
+                let response = self
+                    .processRequest(rawData: data, requestID: requestID)
+                    .withHeaders(["X-Request-Id": requestID])
+
+                if response.status >= 400 {
+                    self.logger.warn(
+                        "api",
+                        "Request failed",
+                        requestID: requestID,
+                        metadata: [
+                            "method": method,
+                            "path": path,
+                            "status": "\(response.status)"
+                        ]
+                    )
+                } else {
+                    self.logger.info(
+                        "api",
+                        "Request completed",
+                        requestID: requestID,
+                        metadata: [
+                            "method": method,
+                            "path": path,
+                            "status": "\(response.status)"
+                        ]
+                    )
+                }
+
                 connection.send(content: response.serialized(), completion: .contentProcessed { _ in
                     connection.cancel()
                 })
@@ -269,26 +316,35 @@ final class ANAJAPIServer {
         return nil
     }
 
-    private func processRequest(rawData: Data) -> HTTPResponse {
+    private func processRequest(rawData: Data, requestID: String) -> HTTPResponse {
         guard let request = HTTPRequest.parse(rawData) else {
-            return .json(status: 400, body: ["error": "Malformed HTTP request"])
+            return .json(status: 400, body: [
+                "error": "Malformed HTTP request",
+                "code": "MALFORMED_REQUEST",
+                "requestId": requestID
+            ])
         }
 
         guard authorize(request: request) else {
             return .json(status: 401, body: [
                 "error": "Unauthorized",
-                "hint": "Set x-anaj-key (or Authorization: Bearer <key>) to match configured ANAJ API key."
+                "code": "UNAUTHORIZED",
+                "hint": "Set x-anaj-key (or Authorization: Bearer <key>) to match configured ANAJ API key.",
+                "requestId": requestID
             ])
         }
 
         guard let modelContainer else {
-            return .json(status: 503, body: ["error": "Model container unavailable"])
+            return .json(status: 503, body: [
+                "error": "Model container unavailable",
+                "code": "MODEL_UNAVAILABLE",
+                "requestId": requestID
+            ])
         }
 
         do {
             let context = ModelContext(modelContainer)
             let path = request.path
-            let requestID = UUID().uuidString
 
             if let allowed = allowedMethods(for: path), !allowed.contains(request.method) {
                 return .json(
@@ -1461,10 +1517,16 @@ final class ANAJAPIServer {
                 "requestId": requestID
             ])
         } catch {
+            logger.error(
+                "api",
+                "Unhandled API error",
+                requestID: requestID,
+                metadata: ["error": error.localizedDescription]
+            )
             return .json(status: 500, body: [
                 "error": error.localizedDescription,
                 "code": "INTERNAL_SERVER_ERROR",
-                "requestId": UUID().uuidString
+                "requestId": requestID
             ])
         }
     }
@@ -2184,6 +2246,12 @@ private struct HTTPResponse {
 
     static func raw(status: Int, contentType: String, body: Data) -> HTTPResponse {
         HTTPResponse(status: status, reason: reason(for: status), contentType: contentType, body: body, headers: [:])
+    }
+
+    func withHeaders(_ additional: [String: String]) -> HTTPResponse {
+        guard !additional.isEmpty else { return self }
+        let merged = headers.merging(additional) { _, rhs in rhs }
+        return HTTPResponse(status: status, reason: reason, contentType: contentType, body: body, headers: merged)
     }
 
     func serialized() -> Data {

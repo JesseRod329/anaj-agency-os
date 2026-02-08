@@ -27,6 +27,7 @@ final class OpenClawWebSocketHub {
 
     private var requiredAPIKeyProvider: (() -> String)?
     private var commandHandler: CommandHandler?
+    private let logger = ANAJLogger.shared
 
     func start(
         port: UInt16 = 18791,
@@ -48,8 +49,10 @@ final class OpenClawWebSocketHub {
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    self.logger.info("ws", "WebSocket hub ready", metadata: ["url": "ws://127.0.0.1:\(port)/ws/openclaw"])
                     print("ANAJ OpenClaw WebSocket listening on ws://127.0.0.1:\(port)/ws/openclaw")
                 case .failed(let error):
+                    self.logger.error("ws", "WebSocket hub failed", metadata: ["error": error.localizedDescription])
                     print("ANAJ OpenClaw WebSocket failed: \(error)")
                 default:
                     break
@@ -60,6 +63,7 @@ final class OpenClawWebSocketHub {
             self.listener = listener
             startHeartbeat()
         } catch {
+            logger.error("ws", "Failed to start WebSocket hub", metadata: ["error": error.localizedDescription])
             print("Failed to start OpenClaw WebSocket hub: \(error)")
         }
     }
@@ -82,6 +86,15 @@ final class OpenClawWebSocketHub {
         guard let payload = encodeJSON(event) else { return }
         queue.async { [weak self] in
             guard let self else { return }
+            self.logger.debug(
+                "ws",
+                "Broadcasting event",
+                metadata: [
+                    "event": event.event,
+                    "entity": event.entity,
+                    "clients": "\(self.clients.count)"
+                ]
+            )
             for session in self.clients.values {
                 self.sendTextFrame(payload, to: session)
             }
@@ -105,6 +118,7 @@ final class OpenClawWebSocketHub {
             .map(\.id)
 
         for id in staleIDs {
+            logger.warn("ws", "Disconnecting stale client", metadata: ["clientId": id.uuidString])
             disconnectClient(id: id, reason: "Heartbeat timeout")
         }
 
@@ -167,6 +181,11 @@ final class OpenClawWebSocketHub {
 
         let requiredAPIKey = requiredAPIKeyProvider?().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !requiredAPIKey.isEmpty && !request.isAuthorized(requiredAPIKey: requiredAPIKey) {
+            logger.warn(
+                "ws",
+                "Rejected unauthorized WebSocket handshake",
+                metadata: ["path": request.path]
+            )
             sendHTTPResponse(status: 401, reason: "Unauthorized", body: "Valid x-anaj-key or Bearer token required", on: connection)
             return
         }
@@ -197,6 +216,7 @@ final class OpenClawWebSocketHub {
             let clientID = UUID()
             let session = ClientSession(id: clientID, connection: connection, initialBuffer: remainder)
             self.clients[clientID] = session
+            self.logger.info("ws", "WebSocket client connected", metadata: ["clientId": clientID.uuidString])
             self.handleBufferedFrames(for: clientID)
             self.receiveFrameData(for: clientID)
         })
@@ -251,6 +271,15 @@ final class OpenClawWebSocketHub {
     private func handleTextFrame(_ payload: Data, from clientID: UUID) {
         do {
             let envelope = try JSONDecoder().decode(OpenClawCommandEnvelope.self, from: payload)
+            logger.info(
+                "ws",
+                "Received command envelope",
+                requestID: envelope.id,
+                metadata: [
+                    "clientId": clientID.uuidString,
+                    "command": envelope.command
+                ]
+            )
             Task { [weak self] in
                 guard let self else { return }
                 let ack: OpenClawAckEnvelope
@@ -273,6 +302,14 @@ final class OpenClawWebSocketHub {
                 }
             }
         } catch {
+            logger.warn(
+                "ws",
+                "Invalid command envelope",
+                metadata: [
+                    "clientId": clientID.uuidString,
+                    "error": error.localizedDescription
+                ]
+            )
             let ack = OpenClawAckEnvelope(
                 type: "ack",
                 id: UUID().uuidString,
@@ -289,6 +326,16 @@ final class OpenClawWebSocketHub {
 
     private func sendAck(_ ack: OpenClawAckEnvelope, to clientID: UUID) {
         guard let session = clients[clientID], let data = encodeJSON(ack) else { return }
+        logger.info(
+            "ws",
+            "Sent command ack",
+            requestID: ack.requestId,
+            metadata: [
+                "clientId": clientID.uuidString,
+                "command": ack.command,
+                "status": ack.status
+            ]
+        )
         sendTextFrame(data, to: session)
     }
 
@@ -320,6 +367,7 @@ final class OpenClawWebSocketHub {
     private func disconnectClient(id: UUID, reason: String) {
         guard let session = clients.removeValue(forKey: id) else { return }
         session.connection.cancel()
+        logger.info("ws", "WebSocket client disconnected", metadata: ["clientId": id.uuidString, "reason": reason])
         print("OpenClaw WebSocket client disconnected (\(id.uuidString)): \(reason)")
     }
 

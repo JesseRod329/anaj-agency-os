@@ -25,3 +25,6 @@ For vulnerabilities, use the private process in [Security Policy](../.github/SEC
    - inspect the `Allow` header and retry with the permitted method.
 5. If OpenClaw chat returns `404`:
    - confirm Prompt Studio OpenClaw URL is `http://127.0.0.1:18890` (not `18790`).
+6. Check runtime integration logs:
+   - `tail -f ~/Library/Logs/ANAJ/openclaw.log`
+   - Look for shared `req:<requestId>` values across API and WebSocket entries.

@@ -264,6 +264,9 @@ cd /Users/jesse/anaj1/anaj
 - `405 Method Not Allowed`:
   - Path exists but HTTP verb is wrong.
   - Check `Allow` header and use that method.
+- Debug log file:
+  - `~/Library/Logs/ANAJ/openclaw.log`
+  - Tail live: `tail -f ~/Library/Logs/ANAJ/openclaw.log`
 
 ## Open Source
 
