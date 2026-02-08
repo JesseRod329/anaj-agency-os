@@ -8,6 +8,7 @@ struct LiquidContainerView<Content: View>: View {
     @AppStorage("isLiquidEnabled") private var isLiquidEnabled = true
     @State private var showingCommandMenu = false
     @StateObject private var commandCenter = AppCommandCenter.shared
+    @State private var didInitialRouteSync = false
     
     @ViewBuilder var content: Content
     
@@ -142,7 +143,9 @@ struct LiquidContainerView<Content: View>: View {
             }
         )
         .onAppear {
+            guard !didInitialRouteSync else { return }
             selectedRoute = commandCenter.route
+            didInitialRouteSync = true
         }
         .onReceive(commandCenter.$route.removeDuplicates()) { route in
             if route != selectedRoute {
