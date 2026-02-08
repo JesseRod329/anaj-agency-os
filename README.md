@@ -197,19 +197,40 @@ xcodebuild test -project anaj.xcodeproj -scheme anaj -destination "platform=macO
 The app starts a local API server when ANAJ launches:
 
 - Base URL: `http://127.0.0.1:18790`
+- Realtime WebSocket: `ws://127.0.0.1:18791/ws/openclaw`
 - Health: `GET /api/health`
 - Endpoints:
   - `GET /api/health`
+  - `GET /api/settings`
+  - `PATCH /api/settings`
   - `GET /api/clients`
   - `POST /api/clients`
+  - `PATCH /api/clients/:id`
+  - `GET /api/clients/:id/projects`
   - `GET /api/projects`
   - `POST /api/projects`
+  - `GET /api/projects/:id`
+  - `PATCH /api/projects/:id`
+  - `DELETE /api/projects/:id`
   - `GET /api/tasks`
   - `POST /api/tasks`
   - `PATCH /api/tasks/:id`
+  - `DELETE /api/tasks/:id`
+  - `GET /api/notes`
   - `POST /api/notes`
+  - `PATCH /api/notes/:id`
+  - `GET /api/invoices`
+  - `POST /api/invoices`
+  - `GET /api/invoices/:id`
+  - `GET /api/invoices/:id/pdf`
   - `GET /api/ledger`
   - `POST /api/notify`
+  - `POST /api/commands/execute`
+  - `GET /api/events/stream`
+  - `POST /api/memory/sync`
+  - `GET /api/memory/changes`
+  - `POST /api/agents/run`
+  - `GET /api/agents/runs/:id`
 
 The API contract is evolving with the OpenClaw integration roadmap in this repository.
 
@@ -219,6 +240,7 @@ Prompt Studio now includes a **Connect OpenClaw** button that can start the Open
 
 - Port map:
   - ANAJ local API: `http://127.0.0.1:18790`
+  - ANAJ realtime WebSocket: `ws://127.0.0.1:18791/ws/openclaw`
   - OpenClaw bridge: `http://127.0.0.1:18890`
 - Default OpenClaw endpoint in settings: `http://127.0.0.1:18890`
 - Startup script used by the button:
@@ -230,6 +252,21 @@ Manual fallback:
 cd /Users/jesse/anaj1/anaj
 ./scripts/start-openclaw-bridge.sh
 ```
+
+### Troubleshooting OpenClaw Integration
+
+- `401 Unauthorized`:
+  - Set `ANAJ API Key` in ANAJ Settings and Prompt Studio OpenClaw settings.
+  - Ensure bridge process receives `ANAJ_API_KEY`.
+- `404 Not Found` for `/chat`:
+  - You are likely pointing at ANAJ API (`18790`) instead of bridge (`18890`).
+  - Use `http://127.0.0.1:18890` for OpenClaw provider base URL.
+- `405 Method Not Allowed`:
+  - Path exists but HTTP verb is wrong.
+  - Check `Allow` header and use that method.
+- Debug log file:
+  - `~/Library/Logs/ANAJ/openclaw.log`
+  - Tail live: `tail -f ~/Library/Logs/ANAJ/openclaw.log`
 
 ## Open Source
 

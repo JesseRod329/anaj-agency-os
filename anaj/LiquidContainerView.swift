@@ -1,11 +1,12 @@
 #if os(macOS)
 import SwiftUI
+import Combine
 
 struct LiquidContainerView<Content: View>: View {
     // 1. Navigation State
-    @State private var selectedRoute: SidebarRoute = .dashboard
     @AppStorage("isLiquidEnabled") private var isLiquidEnabled = true
     @State private var showingCommandMenu = false
+    @ObservedObject private var commandCenter = AppCommandCenter.shared
     
     @ViewBuilder var content: Content
     
@@ -26,54 +27,46 @@ struct LiquidContainerView<Content: View>: View {
             HStack(spacing: 0) {
                 
                 // Sidebar - Passing the correct binding
-                FloatingSidebar(selectedRoute: $selectedRoute)
+                FloatingSidebar(
+                    selectedRoute: Binding(
+                        get: { commandCenter.route },
+                        set: { commandCenter.setRoute($0) }
+                    )
+                )
                     .frame(width: 260)
                     .padding(.vertical, 20)
                     .padding(.leading, 20)
                 
                 // Dynamic Content Area
                 VStack {
-                    switch selectedRoute {
+                    switch commandCenter.route {
                     case .dashboard:
                         DashboardView()
-                            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
                     case .projects:
                         ProjectsView()
-                            .transition(.opacity)
                     case .studio:
                         PromptStudioView()
-                            .transition(.opacity)
                     case .insights:
                         InsightsView()
-                            .transition(.opacity)
                     case .clients:
                         ClientsView()
-                            .transition(.opacity)
                     case .knowledge:
                         NotesView()
-                            .transition(.opacity)
                     case .memory:
                         DecisionLogView()
-                            .transition(.opacity)
                     case .ledger:
                         AgencyLedgerView()
-                            .transition(.opacity)
                     case .team:
                         TeamView()
-                            .transition(.opacity)
                     case .calendar:
                         CalendarView()
-                            .transition(.opacity)
                     case .archive:
                         ArchiveView()
-                            .transition(.opacity)
                     case .settings:
                         SettingsView()
-                            .transition(.opacity)
                     }
                 }
                 .padding(20)
-                .animation(.easeInOut(duration: 0.2), value: selectedRoute) // Faster, simpler animation
             }
             .blur(radius: showingCommandMenu ? 5 : 0) // Reduced blur for performance
             .scaleEffect(showingCommandMenu ? 0.99 : 1.0)
@@ -139,6 +132,9 @@ struct LiquidContainerView<Content: View>: View {
                 .opacity(0)
             }
         )
+        .onReceive(commandCenter.$refreshToken) { _ in
+            NotificationCenter.default.post(name: .anajDataDidChange, object: nil)
+        }
     }
 }
 #endif

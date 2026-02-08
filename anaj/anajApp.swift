@@ -182,4 +182,5 @@ extension Notification.Name {
     static let exportBackup = Notification.Name("exportBackup")
     static let toggleSidebar = Notification.Name("toggleSidebar")
     static let openGlobalSearch = Notification.Name("openGlobalSearch")
+    static let anajDataDidChange = Notification.Name("anajDataDidChange")
 }
