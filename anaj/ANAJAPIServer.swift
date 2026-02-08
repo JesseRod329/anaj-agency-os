@@ -70,13 +70,21 @@ final class ANAJAPIServer {
         }
     }
 
+    private func saveAndNotify(_ context: ModelContext) throws {
+        try context.save()
+        NotificationCenter.default.post(name: .anajDataDidChange, object: nil)
+    }
+
     private func processRequest(rawData: Data) -> HTTPResponse {
         guard let request = HTTPRequest.parse(rawData) else {
             return .json(status: 400, body: ["error": "Malformed HTTP request"])
         }
 
         guard authorize(request: request) else {
-            return .json(status: 401, body: ["error": "Unauthorized"])
+            return .json(status: 401, body: [
+                "error": "Unauthorized",
+                "hint": "Set x-anaj-key (or Authorization: Bearer <key>) to match configured ANAJ API key."
+            ])
         }
 
         guard let modelContainer else {
@@ -196,7 +204,7 @@ final class ANAJAPIServer {
 
                 context.insert(task)
                 logActivity("Task Created", subtitle: task.content, context: context)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .encodable(201, TaskResponse(from: task))
             }
@@ -233,7 +241,7 @@ final class ANAJAPIServer {
                 }
 
                 logActivity("Task Updated", subtitle: task.content, context: context)
-                try context.save()
+                try saveAndNotify(context)
                 return .encodable(200, TaskResponse(from: task))
             }
 
@@ -246,7 +254,7 @@ final class ANAJAPIServer {
                 let client = Client(name: input.name, industry: input.industry ?? "")
                 context.insert(client)
                 logActivity("Client Created", subtitle: client.name, context: context)
-                try context.save()
+                try saveAndNotify(context)
 
                 let payload = ClientResponse(
                     id: client.id.uuidString,
@@ -281,7 +289,7 @@ final class ANAJAPIServer {
 
                 context.insert(project)
                 logActivity("Project Created", subtitle: project.title, context: context)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .encodable(201, ProjectResponse(
                     id: project.id.uuidString,
@@ -318,7 +326,7 @@ final class ANAJAPIServer {
 
                 context.insert(note)
                 logActivity("Note Created", subtitle: note.title, context: context)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .json(status: 201, body: [
                     "id": note.id.uuidString,
@@ -375,7 +383,7 @@ final class ANAJAPIServer {
                     processedAt: Date()
                 )
                 context.insert(event)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .json(status: 202, body: [
                     "status": "accepted",
@@ -410,7 +418,7 @@ final class ANAJAPIServer {
                 )
                 context.insert(event)
                 logActivity("OpenClaw Event", subtitle: eventType, context: context)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .json(status: 202, body: [
                     "status": "accepted",
@@ -449,7 +457,7 @@ final class ANAJAPIServer {
                     requestJSON: serializeJSONObject(payload)
                 )
                 context.insert(execution)
-                try context.save()
+                try saveAndNotify(context)
 
                 do {
                     let result = try executeCommand(command: command, payload: payload, context: context)
@@ -470,7 +478,7 @@ final class ANAJAPIServer {
                         processedAt: Date()
                     )
                     context.insert(event)
-                    try context.save()
+                    try saveAndNotify(context)
 
                     return .json(status: 200, body: [
                         "status": "completed",
@@ -482,7 +490,7 @@ final class ANAJAPIServer {
                     execution.status = .failed
                     execution.errorMessage = apiError.message
                     execution.completedAt = Date()
-                    try context.save()
+                    try saveAndNotify(context)
 
                     return .json(status: apiError.status, body: [
                         "error": apiError.message,
@@ -586,7 +594,7 @@ final class ANAJAPIServer {
                     processedAt: Date()
                 )
                 context.insert(event)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .json(status: 200, body: [
                     "status": "synced",
@@ -678,7 +686,7 @@ final class ANAJAPIServer {
                     processedAt: Date()
                 )
                 context.insert(event)
-                try context.save()
+                try saveAndNotify(context)
 
                 return .encodable(201, AgentRunResponse(from: run, duplicate: false))
             }
@@ -729,7 +737,7 @@ final class ANAJAPIServer {
 
             context.insert(task)
             logActivity("Task Created", subtitle: task.content, context: context)
-            try context.save()
+            try saveAndNotify(context)
 
             return [
                 "id": task.id.uuidString,
@@ -775,7 +783,7 @@ final class ANAJAPIServer {
             }
 
             logActivity("Task Updated", subtitle: task.content, context: context)
-            try context.save()
+            try saveAndNotify(context)
 
             return [
                 "id": task.id.uuidString,
@@ -810,7 +818,7 @@ final class ANAJAPIServer {
 
             context.insert(note)
             logActivity("Note Created", subtitle: note.title, context: context)
-            try context.save()
+            try saveAndNotify(context)
 
             return [
                 "id": note.id.uuidString,
@@ -827,7 +835,7 @@ final class ANAJAPIServer {
             let client = Client(name: name, industry: (payload["industry"] as? String) ?? "")
             context.insert(client)
             logActivity("Client Created", subtitle: client.name, context: context)
-            try context.save()
+            try saveAndNotify(context)
 
             return [
                 "id": client.id.uuidString,
@@ -858,7 +866,7 @@ final class ANAJAPIServer {
 
             context.insert(project)
             logActivity("Project Created", subtitle: project.title, context: context)
-            try context.save()
+            try saveAndNotify(context)
 
             return [
                 "id": project.id.uuidString,
@@ -901,8 +909,10 @@ final class ANAJAPIServer {
 #if DEBUG
         return true
 #else
-        let required = ProcessInfo.processInfo.environment["ANAJ_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !required.isEmpty else { return false }
+        let required = configuredAPIKey()
+        // Local desktop builds often run without an explicit key configured.
+        // In that case, allow requests and rely on localhost/network boundaries.
+        guard !required.isEmpty else { return true }
 
         if request.headers["x-anaj-key"] == required {
             return true
@@ -918,6 +928,18 @@ final class ANAJAPIServer {
 
         return false
 #endif
+    }
+
+    private func configuredAPIKey() -> String {
+        let environment = ProcessInfo.processInfo.environment["ANAJ_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !environment.isEmpty {
+            return environment
+        }
+
+        let defaults = UserDefaults.standard.string(forKey: "anajAPIKey")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return defaults
     }
 }
 

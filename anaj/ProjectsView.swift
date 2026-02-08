@@ -1,20 +1,22 @@
 import SwiftUI
 import SwiftData
+import Combine
 
 struct ProjectsView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Project.title, order: .forward) private var projects: [Project]
-    @Query(sort: \Client.name, order: .forward) private var clients: [Client]
 
     @State private var newTitle: String = ""
     @State private var selectedClient: Client? = nil
     @State private var accentHex: String = "#5AE6FF"
     @State private var showSuccess = false
     @State private var filterStatus: ProjectStatus? = nil
+    @State private var projectRows: [Project] = []
+    @State private var clientRows: [Client] = []
+    @State private var refreshTimer: Timer? = nil
 
     // Filter archived projects
     private var visibleProjects: [Project] {
-        let filtered = projects.filter { !$0.isArchived }
+        let filtered = projectRows.filter { !$0.isArchived }
         if let status = filterStatus {
             return filtered.filter { $0.status == status }
         }
@@ -84,7 +86,7 @@ struct ProjectsView: View {
                 
                 Picker("", selection: $selectedClient) {
                     Text("No Client").tag(nil as Client?)
-                    ForEach(clients.filter { !$0.isArchived }) { client in
+                    ForEach(clientRows.filter { !$0.isArchived }) { client in
                         Text(client.name).tag(client as Client?)
                     }
                 }
@@ -114,7 +116,7 @@ struct ProjectsView: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 16) {
                     ForEach(visibleProjects) { project in
-                        ProjectRow(project: project, clients: clients, onDelete: { delete(project) })
+                        ProjectRow(project: project, clients: clientRows, onDelete: { delete(project) })
                     }
                     
                     if visibleProjects.isEmpty {
@@ -137,6 +139,16 @@ struct ProjectsView: View {
             }
         }
         .padding(24)
+        .onAppear {
+            refreshData()
+            startAutoRefresh()
+        }
+        .onDisappear {
+            stopAutoRefresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .anajDataDidChange)) { _ in
+            refreshData()
+        }
     }
 
     private func createProject() {
@@ -153,6 +165,7 @@ struct ProjectsView: View {
                 try modelContext.save()
                 newTitle = ""
                 selectedClient = nil
+                refreshData()
                 withAnimation { showSuccess = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     withAnimation { showSuccess = false }
@@ -166,7 +179,46 @@ struct ProjectsView: View {
     private func delete(_ project: Project) {
         withAnimation(.snappy) {
             modelContext.delete(project)
+            do {
+                try modelContext.save()
+                refreshData()
+            } catch {
+                print("Failed to delete project: \(error)")
+            }
         }
+    }
+
+    private func refreshData() {
+        do {
+            let projectDescriptor = FetchDescriptor<Project>(
+                sortBy: [SortDescriptor(\Project.title, order: .forward)]
+            )
+            let clientDescriptor = FetchDescriptor<Client>(
+                sortBy: [SortDescriptor(\Client.name, order: .forward)]
+            )
+
+            projectRows = try modelContext.fetch(projectDescriptor)
+            clientRows = try modelContext.fetch(clientDescriptor)
+
+            if let selectedClient,
+               clientRows.contains(where: { $0.id == selectedClient.id }) == false {
+                self.selectedClient = nil
+            }
+        } catch {
+            print("Failed to refresh projects data: \(error)")
+        }
+    }
+
+    private func startAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            refreshData()
+        }
+    }
+
+    private func stopAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
     }
 }
 

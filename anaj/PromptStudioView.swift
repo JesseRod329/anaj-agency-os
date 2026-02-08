@@ -1457,12 +1457,31 @@ struct OpenClawProvider {
 
         guard !trimmed.isEmpty else { return [] }
 
-        var candidates: [String] = ["\(trimmed)/chat"]
-        if trimmed.lowercased().hasSuffix("/api") {
-            let root = String(trimmed.dropLast(4)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            if !root.isEmpty {
-                candidates.append("\(root)/chat")
+        var candidates: [String] = []
+        let lowered = trimmed.lowercased()
+
+        // Support either a base URL (host[:port]) or a full chat endpoint.
+        if lowered.hasSuffix("/chat") || lowered.hasSuffix("/api/chat") {
+            candidates.append(trimmed)
+        } else {
+            candidates.append("\(trimmed)/chat")
+            if lowered.hasSuffix("/api") {
+                let root = String(trimmed.dropLast(4)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if !root.isEmpty {
+                    candidates.append("\(root)/chat")
+                }
             }
+        }
+
+        // If a path is included (for example /v1), also try host root /chat.
+        if let parsed = URL(string: trimmed),
+           let scheme = parsed.scheme,
+           let host = parsed.host {
+            var hostRoot = "\(scheme)://\(host)"
+            if let port = parsed.port {
+                hostRoot += ":\(port)"
+            }
+            candidates.append("\(hostRoot)/chat")
         }
 
         var seen = Set<String>()
@@ -1511,7 +1530,7 @@ struct OpenClawProvider {
                 lastError = statusError
 
                 let hasNext = index < urls.count - 1
-                if http.statusCode == 404 && hasNext {
+                if (http.statusCode == 404 || http.statusCode == 405) && hasNext {
                     continue
                 }
                 throw statusError
@@ -1561,6 +1580,10 @@ struct OpenClawProvider {
                 return "OpenClaw route not found at \(baseURL). This URL points to ANAJ local API on port 18790. Switch to http://127.0.0.1:18890 or use Connect OpenClaw."
             }
             return "OpenClaw /chat route not found at \(baseURL). Ensure the bridge backend is running on port 18890."
+        }
+
+        if statusCode == 405 {
+            return "OpenClaw endpoint returned 405 Method Not Allowed. Prompt Studio sends POST /chat. Use the bridge base URL (for example http://127.0.0.1:18890), not a GET-only route."
         }
 
         if statusCode == 502 {
@@ -1748,7 +1771,7 @@ final class OpenClawBridgeService: ObservableObject {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             let text = String(data: data, encoding: .utf8) ?? ""
-            Task { @MainActor in
+            Task { @MainActor [weak self, text] in
                 self?.appendLog(text)
             }
         }
@@ -1800,22 +1823,29 @@ final class OpenClawBridgeService: ObservableObject {
     }
 
     private func chatRouteExists(baseURL: String) async -> Bool {
-        guard let url = URL(string: "\(baseURL)/chat") else { return false }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 2
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("{}".utf8)
+        let urls = chatURLCandidates(baseURL: baseURL)
+        guard !urls.isEmpty else { return false }
 
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else { return false }
-            if http.statusCode == 404 { return false }
-            if http.statusCode == 405 { return false }
-            return true
-        } catch {
-            return false
+        for url in urls {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 2
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data("{}".utf8)
+
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else { continue }
+                if http.statusCode == 404 || http.statusCode == 405 {
+                    continue
+                }
+                return true
+            } catch {
+                continue
+            }
         }
+
+        return false
     }
 
     private func detectLegacyPortConflict(baseURL: String) async -> Bool {
@@ -1872,6 +1902,43 @@ final class OpenClawBridgeService: ObservableObject {
         baseURL
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func chatURLCandidates(baseURL: String) -> [URL] {
+        let trimmed = normalize(baseURL: baseURL)
+        guard !trimmed.isEmpty else { return [] }
+
+        var candidates: [String] = []
+        let lowered = trimmed.lowercased()
+
+        if lowered.hasSuffix("/chat") || lowered.hasSuffix("/api/chat") {
+            candidates.append(trimmed)
+        } else {
+            candidates.append("\(trimmed)/chat")
+            if lowered.hasSuffix("/api") {
+                let root = String(trimmed.dropLast(4)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if !root.isEmpty {
+                    candidates.append("\(root)/chat")
+                }
+            }
+        }
+
+        if let parsed = URL(string: trimmed),
+           let scheme = parsed.scheme,
+           let host = parsed.host {
+            var hostRoot = "\(scheme)://\(host)"
+            if let port = parsed.port {
+                hostRoot += ":\(port)"
+            }
+            candidates.append("\(hostRoot)/chat")
+        }
+
+        var seen = Set<String>()
+        return candidates.compactMap { value in
+            let key = value.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            return URL(string: value)
+        }
     }
 }
 

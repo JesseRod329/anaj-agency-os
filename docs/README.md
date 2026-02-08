@@ -26,3 +26,7 @@ This folder contains operational and contributor-facing documentation for ANAJ A
   - Project: `anaj.xcodeproj/`
   - Tests: `anajTests/`, `anajUITests/`
 - Generated artifacts must not be committed (`build/`, DerivedData, user data files).
+## Integration Execution Log
+
+- `openclaw-integration-log.md`: slice-by-slice implementation/push history and WebSocket command/event contracts.
+
