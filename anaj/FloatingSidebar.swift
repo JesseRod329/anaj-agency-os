@@ -71,9 +71,7 @@ struct FloatingSidebar: View {
                             isSelected: selectedRoute == route,
                             isHovered: hoveredItem == route
                         ) {
-                            withAnimation(.spring(response: 0.3)) {
-                                selectedRoute = route
-                            }
+                            selectedRoute = route
                         }
                         .onHover { hovering in
                             hoveredItem = hovering ? route : nil
