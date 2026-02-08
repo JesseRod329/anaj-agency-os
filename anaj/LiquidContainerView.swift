@@ -42,44 +42,31 @@ struct LiquidContainerView<Content: View>: View {
                     switch commandCenter.route {
                     case .dashboard:
                         DashboardView()
-                            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
                     case .projects:
                         ProjectsView()
-                            .transition(.opacity)
                     case .studio:
                         PromptStudioView()
-                            .transition(.opacity)
                     case .insights:
                         InsightsView()
-                            .transition(.opacity)
                     case .clients:
                         ClientsView()
-                            .transition(.opacity)
                     case .knowledge:
                         NotesView()
-                            .transition(.opacity)
                     case .memory:
                         DecisionLogView()
-                            .transition(.opacity)
                     case .ledger:
                         AgencyLedgerView()
-                            .transition(.opacity)
                     case .team:
                         TeamView()
-                            .transition(.opacity)
                     case .calendar:
                         CalendarView()
-                            .transition(.opacity)
                     case .archive:
                         ArchiveView()
-                            .transition(.opacity)
                     case .settings:
                         SettingsView()
-                            .transition(.opacity)
                     }
                 }
                 .padding(20)
-                .animation(.easeInOut(duration: 0.2), value: commandCenter.route) // Faster, simpler animation
             }
             .blur(radius: showingCommandMenu ? 5 : 0) // Reduced blur for performance
             .scaleEffect(showingCommandMenu ? 0.99 : 1.0)
