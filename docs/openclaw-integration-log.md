@@ -64,3 +64,24 @@ For each slice append:
 
 - Status: initialized
 - Scope: existing dirty workspace + contracts scaffold
+
+## Slice 0 - Baseline checkpoint and contracts
+- Commit: `1ee5300`
+- Push: `origin codex/openclaw-full-control`
+- PR: https://github.com/JesseRod329/anaj-agency-os/pull/2
+- Validation:
+  - `git push -u origin codex/openclaw-full-control`
+  - Branch created and tracking remote.
+- Notes:
+  - DMG artifact intentionally excluded from git history.
+
+## Slice 1 - Realtime WebSocket foundation
+- Commit: this slice commit (`feat: add websocket hub for realtime openclaw bridge`)
+- Push: `origin codex/openclaw-full-control`
+- PR: https://github.com/JesseRod329/anaj-agency-os/pull/2
+- Validation:
+  - `xcodebuild -project /Users/jesse/anaj1/anaj/anaj.xcodeproj -scheme anaj -destination "platform=macOS" build`
+  - BUILD SUCCEEDED.
+- Notes:
+  - Added dedicated WebSocket listener on `18791` with handshake/auth/heartbeat.
+  - Added typed command/ack/event envelopes and command execution acknowledgements.

@@ -6,14 +6,15 @@ import SwiftData
 final class ANAJAPIServer {
     static let shared = ANAJAPIServer()
 
-    private var listener: NWListener?
+    private var apiListener: NWListener?
     private var modelContainer: ModelContainer?
     private let queue = DispatchQueue(label: "anaj.api.server", qos: .utility)
+    private let webSocketHub = OpenClawWebSocketHub()
 
     private init() {}
 
     func start(modelContainer: ModelContainer, port: UInt16 = 18790) {
-        guard listener == nil else { return }
+        guard apiListener == nil else { return }
 
         do {
             let nwPort = NWEndpoint.Port(rawValue: port) ?? 18790
@@ -36,15 +37,17 @@ final class ANAJAPIServer {
             }
 
             listener.start(queue: queue)
-            self.listener = listener
+            self.apiListener = listener
+            startWebSocketHub()
         } catch {
             print("Failed to start ANAJ API: \(error)")
         }
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
+        webSocketHub.stop()
+        apiListener?.cancel()
+        apiListener = nil
     }
 
     private func handle(_ connection: NWConnection) {
@@ -73,6 +76,133 @@ final class ANAJAPIServer {
     private func saveAndNotify(_ context: ModelContext) throws {
         try context.save()
         NotificationCenter.default.post(name: .anajDataDidChange, object: nil)
+        emitRealtimeEvent(
+            event: "workspace.changed",
+            entity: "workspace",
+            entityId: nil,
+            payload: ["source": "anaj"]
+        )
+    }
+
+    private func startWebSocketHub() {
+        webSocketHub.start(
+            port: 18791,
+            requiredAPIKeyProvider: { [weak self] in
+                self?.configuredAPIKey() ?? ""
+            },
+            commandHandler: { [weak self] envelope in
+                guard let self else {
+                    return OpenClawAckEnvelope(
+                        type: "ack",
+                        id: UUID().uuidString,
+                        requestId: envelope.id,
+                        status: "failed",
+                        command: envelope.command,
+                        result: [:],
+                        error: "ANAJ API server unavailable",
+                        sentAt: Date().iso8601
+                    )
+                }
+
+                return await MainActor.run {
+                    self.handleWebSocketCommand(envelope)
+                }
+            }
+        )
+    }
+
+    @MainActor
+    private func handleWebSocketCommand(_ envelope: OpenClawCommandEnvelope) -> OpenClawAckEnvelope {
+        guard envelope.type.lowercased() == "command" else {
+            return makeCommandAck(
+                requestID: envelope.id,
+                command: envelope.command,
+                status: "failed",
+                error: "Invalid envelope type: \(envelope.type)"
+            )
+        }
+
+        guard let modelContainer else {
+            return makeCommandAck(
+                requestID: envelope.id,
+                command: envelope.command,
+                status: "failed",
+                error: "Model container unavailable"
+            )
+        }
+
+        let context = ModelContext(modelContainer)
+        let payload = envelope.params.mapValues { $0.toAny() }
+
+        do {
+            let result = try executeCommand(command: envelope.command, payload: payload, context: context)
+            emitRealtimeEvent(
+                event: "command.executed",
+                entity: "command",
+                entityId: envelope.id,
+                payload: [
+                    "command": envelope.command,
+                    "idempotencyKey": envelope.idempotencyKey ?? ""
+                ]
+            )
+            return makeCommandAck(
+                requestID: envelope.id,
+                command: envelope.command,
+                status: "completed",
+                result: result
+            )
+        } catch let error as APICommandError {
+            return makeCommandAck(
+                requestID: envelope.id,
+                command: envelope.command,
+                status: "failed",
+                error: error.message
+            )
+        } catch {
+            return makeCommandAck(
+                requestID: envelope.id,
+                command: envelope.command,
+                status: "failed",
+                error: error.localizedDescription
+            )
+        }
+    }
+
+    private func makeCommandAck(
+        requestID: String,
+        command: String,
+        status: String,
+        result: [String: Any] = [:],
+        error: String? = nil
+    ) -> OpenClawAckEnvelope {
+        OpenClawAckEnvelope(
+            type: "ack",
+            id: UUID().uuidString,
+            requestId: requestID,
+            status: status,
+            command: command,
+            result: result.mapValues { JSONValue.fromAny($0) },
+            error: error,
+            sentAt: Date().iso8601
+        )
+    }
+
+    private func emitRealtimeEvent(
+        event: String,
+        entity: String,
+        entityId: String?,
+        payload: [String: Any]
+    ) {
+        let envelope = OpenClawEventEnvelope(
+            type: "event",
+            event: event,
+            entity: entity,
+            entityId: entityId,
+            payload: payload.mapValues { JSONValue.fromAny($0) },
+            version: 1,
+            sentAt: Date().iso8601
+        )
+        webSocketHub.broadcast(event: envelope)
     }
 
     private func processRequest(rawData: Data) -> HTTPResponse {
