@@ -100,3 +100,14 @@ For each slice append:
   - Expanded `ANAJAPIServer` with missing CRUD endpoints, filters, pagination, and settings/invoice routes.
   - Added explicit `405 Method Not Allowed` handling with `Allow` header and actionable JSON error payloads.
   - Unified bridge startup auth wiring via `ANAJ_API_KEY` from Prompt Studio / Settings.
+
+## Slice 8 - Documentation and operator runbook
+- Commit: `a452bc4`
+- Push: `origin codex/openclaw-full-control`
+- PR: https://github.com/JesseRod329/anaj-agency-os/pull/2
+- Validation:
+  - Reviewed docs against current API surface and port topology (`18790`, `18791`, `18890`).
+- Notes:
+  - Updated root README API endpoint list with expanded CRUD coverage.
+  - Added realtime WebSocket endpoint and troubleshooting for `401`, `404`, and `405`.
+  - Updated `docs/README.md` and `docs/support.md` with operator triage checklist.
